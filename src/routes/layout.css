@@ -1,0 +1,616 @@
+@import 'tailwindcss';
+
+@theme {
+	--color-neu-bg: #080b11;
+	--color-neu-surface: #111724;
+	--color-neu-ink: #edf2fa;
+	--color-neu-muted: #8b9bb4;
+	--color-neu-accent: #ff4655;
+	--color-neu-cyan: #22d3ee;
+	--color-neu-emerald: #10b981;
+	--color-neu-amber: #fbbf24;
+	--color-neu-violet: #a78bfa;
+
+	--font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+	--font-display: 'Space Grotesk', 'Plus Jakarta Sans', system-ui, sans-serif;
+	--font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+}
+
+@layer base {
+	html,
+	body {
+		color-scheme: dark;
+		background-color: var(--color-neu-bg);
+		color: var(--color-neu-ink);
+		font-family: var(--font-sans);
+		-webkit-font-smoothing: antialiased;
+		-moz-osx-font-smoothing: grayscale;
+	}
+
+	:focus-visible {
+		outline: none;
+		border-color: rgba(255, 255, 255, 0.24);
+	}
+
+	a:focus-visible {
+		text-decoration: underline;
+		text-underline-offset: 4px;
+	}
+}
+
+.font-display {
+	font-family: var(--font-display);
+}
+
+.tabular-nums {
+	font-variant-numeric: tabular-nums;
+}
+
+/* ============================================================================
+   Frosted Glass × Tactile Neumorphism Design System
+   Combines translucent blurred glass surfaces + crisp specular borders with
+   carved dark tactile neumorphic wells and beveled physical controls.
+   ============================================================================ */
+
+/* Ambient mesh backdrop behind frosted surfaces */
+.geim-canvas {
+	position: relative;
+	min-height: 100vh;
+	background-color: #080b11;
+	background-image:
+		radial-gradient(circle at 12% 8%, rgba(255, 70, 85, 0.13) 0%, transparent 38%),
+		radial-gradient(circle at 88% 12%, rgba(34, 211, 238, 0.11) 0%, transparent 40%),
+		radial-gradient(circle at 52% 85%, rgba(139, 92, 246, 0.08) 0%, transparent 48%),
+		linear-gradient(rgba(255, 255, 255, 0.016) 1px, transparent 1px),
+		linear-gradient(90deg, rgba(255, 255, 255, 0.016) 1px, transparent 1px);
+	background-size:
+		100% 100%,
+		100% 100%,
+		100% 100%,
+		40px 40px,
+		40px 40px;
+	background-attachment: fixed;
+}
+
+/* Primary Frosted Glass × Neumorphic Raised Shell */
+.glass-neu,
+.neu-raised {
+	background: linear-gradient(155deg, rgba(22, 29, 44, 0.72) 0%, rgba(12, 16, 26, 0.82) 100%);
+	backdrop-filter: blur(24px) saturate(165%);
+	-webkit-backdrop-filter: blur(24px) saturate(165%);
+	border: 1px solid rgba(255, 255, 255, 0.085);
+	box-shadow:
+		0 20px 42px -12px rgba(0, 0, 0, 0.78),
+		-6px -6px 18px rgba(255, 255, 255, 0.015),
+		inset 0 1px 0 rgba(255, 255, 255, 0.13),
+		inset 0 -1px 0 rgba(0, 0, 0, 0.5);
+}
+
+/* Secondary Frosted Card with Hover Lift */
+.glass-card,
+.neu-raised-sm {
+	background: linear-gradient(160deg, rgba(25, 33, 50, 0.66) 0%, rgba(14, 19, 30, 0.78) 100%);
+	backdrop-filter: blur(18px) saturate(155%);
+	-webkit-backdrop-filter: blur(18px) saturate(155%);
+	border: 1px solid rgba(255, 255, 255, 0.075);
+	box-shadow:
+		0 10px 26px -8px rgba(0, 0, 0, 0.68),
+		inset 0 1px 0 rgba(255, 255, 255, 0.11);
+	transition:
+		transform 180ms cubic-bezier(0.22, 1, 0.36, 1),
+		border-color 180ms ease,
+		box-shadow 180ms ease;
+}
+
+.glass-card-interactive:hover {
+	transform: translateY(-2px);
+	border-color: rgba(255, 255, 255, 0.15);
+	box-shadow:
+		0 18px 34px -10px rgba(0, 0, 0, 0.82),
+		inset 0 1px 0 rgba(255, 255, 255, 0.16);
+}
+
+/* Tactile Neumorphic Sunken Well (Carved into Glass) */
+.neu-well,
+.neu-inset {
+	background: rgba(7, 10, 17, 0.76);
+	border: 1px solid rgba(255, 255, 255, 0.045);
+	box-shadow:
+		inset 4px 4px 10px rgba(0, 0, 0, 0.82),
+		inset -2px -2px 7px rgba(255, 255, 255, 0.025),
+		0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.neu-well-sm,
+.neu-inset-sm {
+	background: rgba(8, 11, 19, 0.72);
+	border: 1px solid rgba(255, 255, 255, 0.045);
+	box-shadow:
+		inset 2px 2px 6px rgba(0, 0, 0, 0.76),
+		inset -1px -1px 4px rgba(255, 255, 255, 0.02),
+		0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+html {
+	scrollbar-gutter: stable;
+}
+
+::-webkit-scrollbar {
+	width: 6px;
+	height: 6px;
+}
+
+::-webkit-scrollbar-button {
+	display: none;
+	width: 0;
+	height: 0;
+}
+
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+	background: #080b11;
+}
+
+::-webkit-scrollbar-thumb {
+	min-height: 28px;
+	border: 1px solid #080b11;
+	border-radius: 9999px;
+	background: linear-gradient(180deg, rgba(148, 163, 184, 0.36), rgba(71, 85, 105, 0.28));
+}
+
+::-webkit-scrollbar-thumb:hover {
+	background: linear-gradient(180deg, rgba(203, 213, 225, 0.56), rgba(100, 116, 139, 0.45));
+}
+
+::-webkit-scrollbar-thumb:active {
+	background: linear-gradient(180deg, #ff4655, #c62b3c);
+}
+
+.neu-dropdown-scroll::-webkit-scrollbar {
+	width: 4px;
+}
+
+.neu-dropdown-scroll::-webkit-scrollbar-track {
+	border-radius: 9999px;
+	background: rgba(7, 10, 17, 0.78);
+}
+
+.neu-dropdown-scroll::-webkit-scrollbar-thumb {
+	border: 0;
+	border-radius: 9999px;
+	background: rgba(148, 163, 184, 0.32);
+}
+
+.neu-dropdown-scroll::-webkit-scrollbar-thumb:hover {
+	background: rgba(203, 213, 225, 0.5);
+}
+
+@supports not selector(::-webkit-scrollbar) {
+	html {
+		scrollbar-width: thin;
+		scrollbar-color: rgba(100, 116, 139, 0.45) #080b11;
+	}
+
+	.neu-dropdown-scroll {
+		scrollbar-width: thin;
+		scrollbar-color: rgba(148, 163, 184, 0.35) rgba(7, 10, 17, 0.72);
+	}
+}
+
+:is(
+	.neu-well:has(> :is(input:not([type='hidden']), select, textarea)),
+	input.neu-well,
+	.neu-field
+) {
+	min-width: 0;
+	height: 44px;
+	padding-block: 0;
+	border: 1px solid rgba(148, 163, 184, 0.22);
+	border-radius: 0.75rem;
+	background: rgba(7, 10, 17, 0.82);
+	box-shadow:
+		inset 3px 3px 8px rgba(0, 0, 0, 0.78),
+		inset -1px -1px 4px rgba(255, 255, 255, 0.025),
+		0 1px 0 rgba(255, 255, 255, 0.04);
+	transition:
+		border-color 150ms ease,
+		box-shadow 150ms ease;
+}
+
+:is(
+	.neu-well:has(> :is(input:not([type='hidden']), select, textarea)),
+	input.neu-well,
+	.neu-field
+):hover {
+	border-color: rgba(203, 213, 225, 0.32);
+}
+
+:is(
+	.neu-well:has(> :is(input:not([type='hidden']), select, textarea)),
+	input.neu-well,
+	.neu-field
+):focus-within {
+	border-color: rgba(226, 232, 240, 0.38);
+	box-shadow:
+		inset 3px 3px 8px rgba(0, 0, 0, 0.82),
+		inset 0 1px 0 rgba(255, 255, 255, 0.08),
+		0 0 14px rgba(255, 70, 85, 0.08);
+}
+
+:where(input, select, textarea) {
+	min-width: 0;
+	caret-color: var(--color-neu-accent);
+	accent-color: var(--color-neu-accent);
+}
+
+:where(input, select, textarea, button):focus-visible {
+	outline: none;
+}
+
+.neu-btn:focus-visible {
+	color: #ffffff;
+	border-color: rgba(255, 255, 255, 0.26);
+	box-shadow:
+		0 4px 12px rgba(0, 0, 0, 0.45),
+		inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+
+.neu-btn-accent:focus-visible {
+	filter: brightness(1.07);
+	border-color: rgba(255, 255, 255, 0.42);
+}
+
+.seg-tab:focus-visible,
+.hero-tab:focus-visible {
+	color: #ffffff;
+	background: rgba(255, 255, 255, 0.06);
+}
+
+.neu-well > :is(input:not([type='hidden']), select) {
+	height: 100%;
+	padding-block: 0;
+	border: 0;
+	background-color: transparent;
+}
+
+.neu-well > :is(input, select, textarea):focus-visible {
+	outline: none;
+}
+
+.neu-well:has(> input:not([type='hidden'])) > button:has(svg) {
+	width: 36px;
+	height: 36px;
+	flex-shrink: 0;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+}
+
+:is(.neu-well input, .neu-field, textarea)::placeholder {
+	color: #94a3b8;
+	opacity: 1;
+}
+
+:is(input, textarea):autofill {
+	-webkit-text-fill-color: var(--color-neu-ink);
+	caret-color: var(--color-neu-accent);
+	box-shadow: 0 0 0 1000px #0a101b inset;
+	border-radius: inherit;
+}
+
+:is(input, select, textarea):disabled,
+.neu-well:has(> :disabled) {
+	cursor: not-allowed;
+	opacity: 0.6;
+}
+
+:is(input, select, textarea):user-invalid,
+.neu-well:has(> :user-invalid) {
+	border-color: #fda4af;
+}
+
+select {
+	appearance: none;
+	min-height: 44px;
+	max-width: 100%;
+	padding-inline-end: 1.75rem;
+	color: var(--color-neu-ink);
+	cursor: pointer;
+	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%2394a3b8' stroke-width='1.5' viewBox='0 0 24 24'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+	background-repeat: no-repeat;
+	background-position: right center;
+}
+
+.neu-well:has(> select) {
+	padding-block: 0;
+}
+
+.neu-well > select {
+	min-height: 44px;
+}
+
+select option,
+select optgroup {
+	background-color: #0d1421;
+	color: var(--color-neu-ink);
+}
+
+@media (pointer: coarse) {
+	:is(input:not([type='hidden']), select, textarea) {
+		font-size: 1rem;
+	}
+}
+
+@media (forced-colors: active) {
+	* {
+		scrollbar-color: auto;
+	}
+
+	:focus-visible {
+		outline: 2px solid ButtonText;
+		outline-offset: 2px;
+	}
+
+	select {
+		appearance: auto;
+		background-image: none;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.neu-well,
+	.neu-field {
+		transition: none;
+	}
+}
+
+/* Tactile Beveled Frosted Button */
+.neu-btn {
+	background: linear-gradient(155deg, rgba(31, 40, 58, 0.78), rgba(18, 24, 37, 0.86));
+	backdrop-filter: blur(12px);
+	-webkit-backdrop-filter: blur(12px);
+	border: 1px solid rgba(255, 255, 255, 0.08);
+	box-shadow:
+		0 4px 12px rgba(0, 0, 0, 0.45),
+		inset 0 1px 0 rgba(255, 255, 255, 0.11);
+	color: #cbd5e1;
+	transition:
+		transform 140ms ease,
+		box-shadow 140ms ease,
+		border-color 140ms ease,
+		background 140ms ease,
+		color 140ms ease;
+}
+
+.neu-btn:hover {
+	color: #ffffff;
+	border-color: rgba(255, 255, 255, 0.16);
+	background: linear-gradient(155deg, rgba(38, 49, 70, 0.85), rgba(22, 29, 44, 0.9));
+}
+
+.neu-btn:active {
+	transform: translateY(1px);
+	box-shadow: inset 2px 2px 6px rgba(0, 0, 0, 0.75);
+}
+
+.neu-btn[data-active='true'] {
+	background: linear-gradient(145deg, rgba(255, 70, 85, 0.22), rgba(255, 70, 85, 0.08));
+	border-color: rgba(255, 70, 85, 0.55);
+	color: #ffffff;
+	box-shadow:
+		0 0 18px rgba(255, 70, 85, 0.2),
+		inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+
+/* Solid Crimson VALORANT Action Button */
+.neu-btn-accent {
+	background: linear-gradient(145deg, #c62b3c 0%, #af1b2c 100%);
+	color: #ffffff;
+	border: 1px solid rgba(255, 255, 255, 0.22);
+	box-shadow:
+		0 8px 20px -4px rgba(255, 70, 85, 0.45),
+		inset 0 1px 0 rgba(255, 255, 255, 0.32);
+	transition:
+		transform 140ms ease,
+		box-shadow 140ms ease,
+		filter 140ms ease;
+}
+
+.neu-btn-accent:hover {
+	filter: brightness(1.07);
+	box-shadow:
+		0 10px 24px -4px rgba(255, 70, 85, 0.6),
+		inset 0 1px 0 rgba(255, 255, 255, 0.38);
+}
+
+.neu-btn-accent:active {
+	transform: translateY(1px);
+	box-shadow: inset 2px 2px 7px rgba(105, 11, 20, 0.7);
+}
+
+/* Segmented Queue / Season Bar Button (Tracker.gg × Frosted Neumorphism) */
+.seg-tab {
+	position: relative;
+	color: #94a3b8;
+	transition:
+		color 150ms ease,
+		background 150ms ease,
+		box-shadow 150ms ease;
+}
+
+.seg-tab:hover {
+	color: #f8fafc;
+	background: rgba(255, 255, 255, 0.04);
+}
+
+.seg-tab[data-active='true'] {
+	background: linear-gradient(145deg, #ff5462 0%, #e63746 100%);
+	color: #ffffff;
+	box-shadow:
+		0 4px 16px rgba(255, 70, 85, 0.38),
+		inset 0 1px 0 rgba(255, 255, 255, 0.28);
+}
+
+/* Sleek Horizontal Frosted-Glass Underline Navigation Tab */
+.hero-tab {
+	position: relative;
+	display: inline-flex;
+	align-items: center;
+	gap: 0.5rem;
+	padding: 0.875rem 1.15rem;
+	font-size: 0.84rem;
+	font-weight: 600;
+	color: #94a3b8;
+	transition: color 160ms ease;
+	white-space: nowrap;
+}
+
+.hero-tab:hover {
+	color: #f1f5f9;
+}
+
+.hero-tab[data-active='true'] {
+	color: #ffffff;
+}
+
+.hero-tab[data-active='true']::after {
+	content: '';
+	position: absolute;
+	left: 0.5rem;
+	right: 0.5rem;
+	bottom: 0;
+	height: 2.5px;
+	border-radius: 9999px;
+	background: linear-gradient(90deg, #ff4655, #ff7882);
+	box-shadow:
+		0 -2px 12px rgba(255, 70, 85, 0.8),
+		0 0 8px rgba(255, 70, 85, 0.65);
+}
+
+.hero-tab[data-active='true']::before {
+	content: '';
+	position: absolute;
+	inset: 0;
+	background: radial-gradient(ellipse at 50% 100%, rgba(255, 70, 85, 0.16) 0%, transparent 72%);
+	pointer-events: none;
+}
+
+/* ============================================================================
+   Progressive Rarity Card System (Select → Deluxe → Premium → Exclusive → Ultra)
+   ============================================================================ */
+
+.rarity-card {
+	--gx: 50%;
+	--gy: 50%;
+	--glare-opacity: 0;
+	transform-style: preserve-3d;
+	will-change: transform;
+}
+
+/* Tier-stepped resting depth & outer bloom */
+.rarity-card[data-rarity='select'] {
+	box-shadow:
+		0 12px 28px -10px rgba(0, 0, 0, 0.72),
+		0 0 18px -6px rgba(90, 159, 226, 0.2),
+		inset 0 1px 0 rgba(147, 197, 253, 0.18);
+}
+
+.rarity-card[data-rarity='deluxe'] {
+	box-shadow:
+		0 14px 30px -10px rgba(0, 0, 0, 0.76),
+		0 0 24px -5px rgba(24, 201, 181, 0.28),
+		inset 0 1px 0 rgba(94, 234, 212, 0.22);
+}
+
+.rarity-card[data-rarity='premium'] {
+	box-shadow:
+		0 16px 34px -10px rgba(0, 0, 0, 0.8),
+		0 0 30px -4px rgba(209, 84, 141, 0.36),
+		inset 0 1px 0 rgba(244, 114, 182, 0.28);
+}
+
+.rarity-card[data-rarity='exclusive'] {
+	box-shadow:
+		0 18px 38px -10px rgba(0, 0, 0, 0.84),
+		0 0 36px -4px rgba(249, 115, 22, 0.42),
+		0 0 14px -2px rgba(255, 70, 85, 0.22),
+		inset 0 1px 0 rgba(253, 186, 116, 0.34);
+}
+
+.rarity-card[data-rarity='ultra'] {
+	box-shadow:
+		0 20px 44px -10px rgba(0, 0, 0, 0.88),
+		0 0 44px -4px rgba(250, 204, 21, 0.46),
+		0 0 20px -2px rgba(34, 211, 238, 0.24),
+		inset 0 1px 0 rgba(254, 240, 138, 0.44);
+}
+
+/* Masked 1.5px animated conic energy border for Premium / Exclusive / Ultra */
+.rarity-conic-mask {
+	padding: 1.5px;
+	-webkit-mask:
+		linear-gradient(#fff 0 0) content-box,
+		linear-gradient(#fff 0 0);
+	-webkit-mask-composite: xor;
+	mask:
+		linear-gradient(#fff 0 0) content-box,
+		linear-gradient(#fff 0 0);
+	mask-composite: exclude;
+}
+
+/* Mobile-smooth background & hidden horizontal pill scrollbars */
+@media (max-width: 767px) {
+	.geim-canvas {
+		background-attachment: scroll;
+	}
+}
+
+.no-scrollbar {
+	-ms-overflow-style: none;
+	scrollbar-width: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+	display: none;
+}
+
+/* Floating Frosted-Glass Mobile Bottom Dock */
+.glass-dock {
+	background: linear-gradient(165deg, rgba(20, 27, 43, 0.78) 0%, rgba(9, 13, 22, 0.88) 100%);
+	backdrop-filter: blur(28px) saturate(185%);
+	-webkit-backdrop-filter: blur(28px) saturate(185%);
+	border: 1px solid rgba(255, 255, 255, 0.13);
+	box-shadow:
+		0 20px 44px -8px rgba(0, 0, 0, 0.88),
+		0 0 28px -6px rgba(255, 70, 85, 0.18),
+		inset 0 1px 0 rgba(255, 255, 255, 0.2),
+		inset 0 -1px 0 rgba(0, 0, 0, 0.55);
+}
+
+/* Native <dialog> Frosted Glass Entrance */
+@keyframes geim-dialog-in {
+	from {
+		opacity: 0;
+		transform: translateY(14px) scale(0.965);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0) scale(1);
+	}
+}
+
+.geim-dialog[open] {
+	animation: geim-dialog-in 260ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.geim-dialog::backdrop {
+	background: rgba(3, 6, 12, 0.78);
+	backdrop-filter: blur(10px) saturate(130%);
+	-webkit-backdrop-filter: blur(10px) saturate(130%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.geim-dialog[open] {
+		animation: none;
+	}
+}

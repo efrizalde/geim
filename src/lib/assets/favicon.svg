@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#172033" />
+      <stop offset="100%" stop-color="#090d16" />
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="16" fill="url(#bg)" stroke="#ffffff" stroke-opacity="0.16" stroke-width="2" />
+  <text x="15" y="43" fill="#ffffff" font-family="system-ui, -apple-system, sans-serif" font-weight="800" font-size="36" letter-spacing="-1.5">g</text>
+  <circle cx="46" cy="39" r="5" fill="#ff4655" />
+</svg>
