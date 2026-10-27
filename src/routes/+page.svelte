@@ -18,6 +18,7 @@
 		X
 	} from '@lucide/svelte';
 	import { cubicOut } from 'svelte/easing';
+	import { tick } from 'svelte';
 	import { fly, scale, slide } from 'svelte/transition';
 	import BrandLogo from '#lib/components/BrandLogo.svelte';
 	import InventorySection from '#lib/components/InventorySection.svelte';
@@ -108,6 +109,58 @@
 		dismissedForm = form;
 		showConnectPanel = false;
 	}
+
+	// Riot's OAuth redirect lands on playvalorant.com (cross-origin), so the URL can only be
+	// captured from the clipboard: instant on `paste`, automatic on tab focus via readText
+	// (browser prompts for clipboard-read permission once).
+	let redirectUrlValue = $state('');
+	let connectFormEl = $state<HTMLFormElement | null>(null);
+	let autoDetected = $state(false);
+	let lastAutoCaptured = '';
+
+	function looksLikeRiotRedirect(text: string): boolean {
+		return /access_token=[^&\s]+/i.test(text) && /id_token=[^&\s]+/i.test(text);
+	}
+
+	async function autoCaptureRedirectUrl(raw: string) {
+		const candidate = raw.trim();
+		if (!candidate || candidate === lastAutoCaptured || connecting) return;
+		lastAutoCaptured = candidate;
+		autoDetected = true;
+		redirectUrlValue = candidate;
+		await tick();
+		connectFormEl?.requestSubmit();
+	}
+
+	$effect(() => {
+		if (!browser || !isConnectOpen || connectMode !== 'redirect' || isMfaStep) return;
+
+		const onPaste = (e: ClipboardEvent) => {
+			const text = e.clipboardData?.getData('text') ?? '';
+			if (looksLikeRiotRedirect(text)) autoCaptureRedirectUrl(text);
+		};
+		const onTabReturn = () => {
+			if (connecting) return;
+			navigator.clipboard
+				?.readText()
+				.then((text) => {
+					if (looksLikeRiotRedirect(text)) autoCaptureRedirectUrl(text);
+				})
+				.catch(() => {});
+		};
+		const onVisibility = () => {
+			if (document.visibilityState === 'visible') onTabReturn();
+		};
+
+		window.addEventListener('paste', onPaste);
+		window.addEventListener('focus', onTabReturn);
+		document.addEventListener('visibilitychange', onVisibility);
+		return () => {
+			window.removeEventListener('paste', onPaste);
+			window.removeEventListener('focus', onTabReturn);
+			document.removeEventListener('visibilitychange', onVisibility);
+		};
+	});
 
 	function toggleConnectPanel() {
 		if (isConnectOpen) {
@@ -546,6 +599,7 @@
 							<form
 								method="POST"
 								action="?/connectAccount"
+								bind:this={connectFormEl}
 								in:fly={{ y: 6, duration: 180, easing: cubicOut }}
 								use:enhance={() => {
 									connecting = true;
@@ -582,7 +636,7 @@
 											<p class="text-xs leading-relaxed text-slate-300">
 												Sign in on Riot Games. Once redirected to
 												<code class="font-mono text-white">playvalorant.com/opt_in</code>, copy the
-												full URL from your browser address bar.
+												full URL — then just switch back here.
 											</p>
 										</div>
 
@@ -623,6 +677,7 @@
 												<input
 													id="redirect-url-input"
 													name="redirectUrl"
+													bind:value={redirectUrlValue}
 													type={showSecrets ? 'text' : 'password'}
 													required
 													placeholder="https://playvalorant.com/opt_in#access_token=..."
@@ -641,6 +696,16 @@
 													{/if}
 												</button>
 											</div>
+											{#if autoDetected}
+												<p role="status" class="font-mono text-[10px] font-bold text-emerald-400">
+													Redirect URL auto-detected — connecting…
+												</p>
+											{:else}
+												<p class="font-mono text-[10px] leading-relaxed text-slate-500">
+													Auto-capture on: copy the URL in the Riot tab, switch back — it fills
+													&amp; connects by itself. Pasting anywhere on this page works too.
+												</p>
+											{/if}
 										</div>
 
 										<div class="grid gap-3 sm:grid-cols-12 sm:items-end">

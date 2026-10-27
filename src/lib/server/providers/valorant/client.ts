@@ -9,6 +9,7 @@ import {
 	type ValorantPdShard
 } from './constants';
 import {
+	CompetitiveUpdatesResponseSchema,
 	EntitlementsResponseSchema,
 	MatchHistoryResponseSchema,
 	PlayerLoadoutResponseSchema,
@@ -503,12 +504,33 @@ export async function fetchPlayerLoadout(ctx: ValorantSessionContext) {
 	return PlayerLoadoutResponseSchema.parse(raw);
 }
 
-export async function fetchMatchHistory(ctx: ValorantSessionContext, endIndex = 10) {
+export async function fetchMatchHistory(
+	ctx: ValorantSessionContext,
+	opts: number | { startIndex?: number; endIndex?: number; queue?: string } = 20
+) {
+	const startIndex = typeof opts === 'number' ? 0 : (opts.startIndex ?? 0);
+	const endIndex = typeof opts === 'number' ? opts : (opts.endIndex ?? startIndex + 20);
+	const queueParam =
+		typeof opts === 'object' && opts.queue ? `&queue=${encodeURIComponent(opts.queue)}` : '';
 	const raw = await pdFetchJson(
 		ctx,
-		`/match-history/v1/history/${ctx.puuid}?startIndex=0&endIndex=${endIndex}`
+		`/match-history/v1/history/${ctx.puuid}?startIndex=${startIndex}&endIndex=${endIndex}${queueParam}`
 	);
 	return MatchHistoryResponseSchema.parse(raw);
+}
+
+export async function fetchCompetitiveUpdates(
+	ctx: ValorantSessionContext,
+	opts: { startIndex?: number; endIndex?: number; queue?: string } = {}
+) {
+	const startIndex = opts.startIndex ?? 0;
+	const endIndex = opts.endIndex ?? startIndex + 20;
+	const queueParam = opts.queue ? `&queue=${encodeURIComponent(opts.queue)}` : '';
+	const raw = await pdFetchJson(
+		ctx,
+		`/mmr/v1/players/${ctx.puuid}/competitiveupdates?startIndex=${startIndex}&endIndex=${endIndex}${queueParam}`
+	);
+	return CompetitiveUpdatesResponseSchema.parse(raw);
 }
 
 export async function fetchAccountXpRaw(ctx: ValorantSessionContext): Promise<unknown> {
@@ -574,4 +596,114 @@ export async function fetchPlayerNames(
 	}
 
 	return resolved;
+}
+
+const HENRIKDEV_BASE_URL = 'https://api.henrikdev.xyz';
+
+async function henrikFetchData(path: string, apiKey: string): Promise<unknown | null> {
+	const res = await fetch(`${HENRIKDEV_BASE_URL}${path}`, {
+		headers: {
+			Authorization: apiKey.trim(),
+			Accept: 'application/json'
+		},
+		signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS)
+	});
+	if (!res.ok) return null;
+	const json = (await res.json()) as { data?: unknown };
+	return json?.data ?? null;
+}
+
+export async function fetchHenrikMatchV4Raw(
+	region: string,
+	matchId: string,
+	apiKey: string
+): Promise<unknown | null> {
+	return henrikFetchData(
+		`/valorant/v4/match/${encodeURIComponent(region)}/${encodeURIComponent(matchId)}`,
+		apiKey
+	);
+}
+
+/**
+ * Fetch HenrikDev's archived `stored-matches`, `stored-mmr-history`, live `v4/matches`,
+ * `v3/mmr`, and `v1/account` for a player using their PUUID (or `gameName#tagLine` fallback).
+ */
+export async function fetchHenrikTrackerBundle(params: {
+	puuid: string;
+	gameName: string;
+	tagLine: string;
+	region: string;
+	apiKey: string;
+}): Promise<{
+	account: unknown | null;
+	mmrV3: unknown | null;
+	v4Matches: unknown[];
+	storedMatches: unknown[];
+	rrDeltaByMatchId: Map<string, number>;
+	latestRankedMatchId: string | null;
+}> {
+	const { puuid, gameName, tagLine, region, apiKey } = params;
+	const affinity = encodeURIComponent((region || 'ap').toLowerCase());
+	const hasPuuid = Boolean(puuid.trim());
+	const encodedPuuid = encodeURIComponent(puuid.trim());
+	const encodedName = encodeURIComponent(gameName.trim());
+	const encodedTag = encodeURIComponent(tagLine.trim());
+
+	const storedMatchesPath = hasPuuid
+		? `/valorant/v1/by-puuid/stored-matches/${affinity}/${encodedPuuid}`
+		: `/valorant/v1/stored-matches/${affinity}/${encodedName}/${encodedTag}`;
+	const storedMmrPath = hasPuuid
+		? `/valorant/v1/by-puuid/stored-mmr-history/${affinity}/${encodedPuuid}`
+		: `/valorant/v1/stored-mmr-history/${affinity}/${encodedName}/${encodedTag}`;
+	const v4MatchesPath = hasPuuid
+		? `/valorant/v4/by-puuid/matches/${affinity}/pc/${encodedPuuid}?size=10`
+		: `/valorant/v4/matches/${affinity}/pc/${encodedName}/${encodedTag}?size=10`;
+	const mmrV3Path = hasPuuid
+		? `/valorant/v3/by-puuid/mmr/${affinity}/pc/${encodedPuuid}`
+		: `/valorant/v3/mmr/${affinity}/pc/${encodedName}/${encodedTag}`;
+	const accountPath = hasPuuid
+		? `/valorant/v1/by-puuid/account/${encodedPuuid}`
+		: `/valorant/v1/account/${encodedName}/${encodedTag}`;
+
+	const [storedMatchesRes, storedMmrRes, v4MatchesRes, mmrV3Res, accountRes] =
+		await Promise.allSettled([
+			henrikFetchData(storedMatchesPath, apiKey),
+			henrikFetchData(storedMmrPath, apiKey),
+			henrikFetchData(v4MatchesPath, apiKey),
+			henrikFetchData(mmrV3Path, apiKey),
+			henrikFetchData(accountPath, apiKey)
+		]);
+
+	const storedMatches =
+		storedMatchesRes.status === 'fulfilled' && Array.isArray(storedMatchesRes.value)
+			? storedMatchesRes.value
+			: [];
+	const v4Matches =
+		v4MatchesRes.status === 'fulfilled' && Array.isArray(v4MatchesRes.value)
+			? v4MatchesRes.value
+			: [];
+	const storedMmrList =
+		storedMmrRes.status === 'fulfilled' && Array.isArray(storedMmrRes.value)
+			? (storedMmrRes.value as Array<{ match_id?: string; last_mmr_change?: number }>)
+			: [];
+
+	const rrDeltaByMatchId = new Map<string, number>();
+	let latestRankedMatchId: string | null = null;
+	for (const entry of storedMmrList) {
+		const id = entry.match_id?.trim();
+		if (!id) continue;
+		if (!latestRankedMatchId) latestRankedMatchId = id;
+		if (typeof entry.last_mmr_change === 'number') {
+			rrDeltaByMatchId.set(id.toLowerCase(), entry.last_mmr_change);
+		}
+	}
+
+	return {
+		account: accountRes.status === 'fulfilled' ? accountRes.value : null,
+		mmrV3: mmrV3Res.status === 'fulfilled' ? mmrV3Res.value : null,
+		v4Matches,
+		storedMatches,
+		rrDeltaByMatchId,
+		latestRankedMatchId
+	};
 }

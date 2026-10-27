@@ -299,7 +299,8 @@ export function parseDetailedMatch(
 	raw: unknown,
 	ownerPuuid: string,
 	lastRankedUpdate?: { matchId: string | null; rrDelta: number | null },
-	resolvedNamesByPuuid?: ReadonlyMap<string, { gameName: string; tagLine: string }>
+	resolvedNamesByPuuid?: ReadonlyMap<string, { gameName: string; tagLine: string }>,
+	rrDeltaByMatchId?: ReadonlyMap<string, number>
 ): StoredMatchRecord | null {
 	const data = raw as RawMatchPayload;
 	const info = data?.matchInfo;
@@ -486,11 +487,12 @@ export function parseDetailedMatch(
 	const myScore = me.stats.score ?? 0;
 
 	const myAgg = perPlayerAgg.get(targetPuuid)!;
+	const matchIdLower = info.matchId.toLowerCase();
 	const rrDelta =
-		lastRankedUpdate?.matchId &&
-		lastRankedUpdate.matchId.toLowerCase() === info.matchId.toLowerCase()
+		rrDeltaByMatchId?.get(matchIdLower) ??
+		(lastRankedUpdate?.matchId && lastRankedUpdate.matchId.toLowerCase() === matchIdLower
 			? lastRankedUpdate.rrDelta
-			: null;
+			: null);
 
 	return {
 		matchId: info.matchId,
@@ -522,6 +524,484 @@ export function parseDetailedMatch(
 		flawlessRounds: myFlawlessRounds,
 		aces: myAgg.aces,
 		scoreboard
+	};
+}
+
+/**
+ * Deduplicate and merge stored match records across snapshots/pages, backfilling `rrDelta`
+ * when competitive updates supply it and sorting newest-first by `startedAt`.
+ * Preserves records with a full 10-player `scoreboard` over summary-only records.
+ */
+export function mergeStoredMatches(
+	existing: StoredMatchRecord[],
+	incoming: StoredMatchRecord[],
+	rrDeltaByMatchId?: ReadonlyMap<string, number>
+): StoredMatchRecord[] {
+	const byId = new Map<string, StoredMatchRecord>();
+
+	const upsert = (m: StoredMatchRecord) => {
+		if (!m?.matchId) return;
+		const key = m.matchId.toLowerCase();
+		const prev = byId.get(key);
+		const rrDelta = m.rrDelta ?? rrDeltaByMatchId?.get(key) ?? prev?.rrDelta ?? null;
+		const competitiveTier = m.competitiveTier || prev?.competitiveTier || 0;
+
+		if (!prev) {
+			byId.set(key, { ...m, rrDelta, competitiveTier });
+			return;
+		}
+
+		const base =
+			prev.scoreboard.length > 0 && m.scoreboard.length === 0
+				? prev
+				: {
+						...prev,
+						...m,
+						durationSeconds: m.durationSeconds || prev.durationSeconds,
+						scoreboard: m.scoreboard.length > 0 ? m.scoreboard : prev.scoreboard
+					};
+		byId.set(key, { ...base, rrDelta, competitiveTier });
+	};
+
+	for (const m of existing) upsert(m);
+	for (const m of incoming) upsert(m);
+
+	return Array.from(byId.values()).sort(
+		(a, b) => (Date.parse(b.startedAt) || 0) - (Date.parse(a.startedAt) || 0)
+	);
+}
+
+export function normalizeHenrikQueueId(rawQueueOrMode: string | null | undefined): string {
+	const norm = (rawQueueOrMode ?? '').trim().toLowerCase();
+	if (!norm || norm === 'standard' || norm === 'unrated') return 'unrated';
+	if (norm === 'competitive') return 'competitive';
+	if (norm === 'deathmatch') return 'deathmatch';
+	if (norm === 'swiftplay') return 'swiftplay';
+	if (norm === 'team deathmatch' || norm === 'hurm') return 'hurm';
+	if (norm === 'custom game' || norm === 'custom') return 'custom';
+	if (norm === 'spike rush' || norm === 'spikerush') return 'spikerush';
+	if (norm === 'escalation' || norm === 'ggteam') return 'escalation';
+	if (norm === 'replication' || norm === 'onefa') return 'replication';
+	return norm.replace(/\s+/g, '_');
+}
+
+interface HenrikV4MatchPayload {
+	metadata?: {
+		match_id?: string;
+		map?: { id?: string; name?: string };
+		game_length_in_ms?: number;
+		started_at?: string;
+		queue?: { id?: string; name?: string };
+		season?: { id?: string; short?: string };
+	};
+	players?: Array<{
+		puuid: string;
+		name?: string;
+		tag?: string;
+		team_id?: string;
+		account_level?: number;
+		agent?: { id?: string; name?: string };
+		tier?: { id?: number; name?: string };
+		customization?: { card?: string; title?: string };
+		stats?: {
+			score?: number;
+			kills?: number;
+			deaths?: number;
+			assists?: number;
+			headshots?: number;
+			bodyshots?: number;
+			legshots?: number;
+			damage?: { dealt?: number; received?: number };
+		} | null;
+	}>;
+	teams?: Array<{
+		team_id: string;
+		placement?: number | null;
+		won?: boolean;
+		rounds?: { won?: number; lost?: number };
+	}>;
+	rounds?: Array<{
+		id: number;
+		ceremony?: string;
+		winning_team?: string;
+		first_blood?: { puuid?: string } | null;
+	}>;
+	kills?: Array<{
+		round?: number;
+		time_in_round_in_ms?: number;
+		killer?: { puuid?: string };
+		victim?: { puuid?: string };
+		assistants?: Array<{ puuid?: string }>;
+	}>;
+}
+
+export function parseHenrikV4Match(
+	raw: unknown,
+	ownerPuuid: string,
+	rrDeltaByMatchId?: ReadonlyMap<string, number>
+): StoredMatchRecord | null {
+	const data = raw as HenrikV4MatchPayload;
+	const meta = data?.metadata;
+	const players = data?.players;
+	if (!meta?.match_id || !players || players.length === 0) return null;
+
+	const targetPuuid = ownerPuuid.toLowerCase();
+	const me = players.find((p) => p.puuid?.toLowerCase() === targetPuuid);
+	if (!me || !me.stats) return null;
+
+	const perPlayerAgg = new Map<string, { firstBloods: number; kastRounds: number; aces: number }>();
+	for (const p of players) {
+		if (p.puuid) {
+			perPlayerAgg.set(p.puuid.toLowerCase(), { firstBloods: 0, kastRounds: 0, aces: 0 });
+		}
+	}
+
+	const killsByRound = new Map<
+		number,
+		Array<{ killer: string; victim: string; roundTime: number; assistants: string[] }>
+	>();
+	for (const k of data.kills ?? []) {
+		const rNum = typeof k.round === 'number' ? k.round : -1;
+		const killer = k.killer?.puuid?.toLowerCase();
+		const victim = k.victim?.puuid?.toLowerCase();
+		if (rNum < 0 || !killer || !victim) continue;
+		const arr = killsByRound.get(rNum) ?? [];
+		arr.push({
+			killer,
+			victim,
+			roundTime: k.time_in_round_in_ms ?? 0,
+			assistants: (k.assistants ?? [])
+				.map((a) => a.puuid?.toLowerCase() ?? '')
+				.filter((id) => id.length > 0)
+		});
+		killsByRound.set(rNum, arr);
+	}
+
+	const rounds = data.rounds ?? [];
+	let myFlawlessRounds = 0;
+
+	for (const round of rounds) {
+		const allKillsInRound = killsByRound.get(round.id) ?? [];
+		const roundKillsCount = new Map<string, number>();
+		for (const k of allKillsInRound) {
+			roundKillsCount.set(k.killer, (roundKillsCount.get(k.killer) ?? 0) + 1);
+		}
+
+		const fbSubject = round.first_blood?.puuid?.toLowerCase();
+		if (fbSubject && perPlayerAgg.has(fbSubject)) {
+			perPlayerAgg.get(fbSubject)!.firstBloods += 1;
+		} else if (allKillsInRound.length > 0) {
+			const earliest = [...allKillsInRound].sort((a, b) => a.roundTime - b.roundTime)[0];
+			const fbFallback = perPlayerAgg.get(earliest.killer);
+			if (fbFallback) fbFallback.firstBloods += 1;
+		}
+
+		for (const p of players) {
+			const subj = p.puuid?.toLowerCase();
+			if (!subj) continue;
+			const agg = perPlayerAgg.get(subj);
+			if (!agg) continue;
+
+			const killsThisRound = roundKillsCount.get(subj) ?? 0;
+			if (killsThisRound >= 5) agg.aces += 1;
+
+			const gotKill = killsThisRound > 0;
+			const gotAssist = allKillsInRound.some((k) => k.assistants.includes(subj));
+			const deathEvent = allKillsInRound.find((k) => k.victim === subj);
+			const survived = !deathEvent;
+			const traded = Boolean(
+				deathEvent &&
+				allKillsInRound.some(
+					(k) =>
+						k.victim === deathEvent.killer &&
+						k.roundTime >= deathEvent.roundTime &&
+						k.roundTime - deathEvent.roundTime <= 5000
+				)
+			);
+			if (gotKill || gotAssist || survived || traded) {
+				agg.kastRounds += 1;
+			}
+		}
+
+		if (
+			me.team_id &&
+			round.winning_team?.toLowerCase() === me.team_id.toLowerCase() &&
+			round.ceremony === 'CeremonyFlawless'
+		) {
+			myFlawlessRounds += 1;
+		}
+	}
+
+	const queueId = normalizeHenrikQueueId(meta.queue?.id ?? meta.queue?.name);
+	const teams = data.teams ?? [];
+	const myTeamIdLower = (me.team_id ?? '').toLowerCase();
+	const myTeamObj = teams.find((t) => t.team_id.toLowerCase() === myTeamIdLower);
+	const enemyTeamObj = teams.find((t) => t.team_id.toLowerCase() !== myTeamIdLower);
+
+	const roundsWon = myTeamObj?.rounds?.won ?? 0;
+	const roundsLost = myTeamObj?.rounds?.lost ?? enemyTeamObj?.rounds?.won ?? 0;
+	const roundsPlayed = Math.max(1, roundsWon + roundsLost || rounds.length || 1);
+
+	let outcome: 'win' | 'loss' | 'draw' = 'draw';
+	if (myTeamObj?.won === true) outcome = 'win';
+	else if (queueId === 'deathmatch')
+		outcome = myTeamObj?.placement === 1 || (me.stats.kills ?? 0) >= 40 ? 'win' : 'loss';
+	else if (enemyTeamObj?.won === true || roundsLost > roundsWon || myTeamObj?.won === false)
+		outcome = 'loss';
+	else if (roundsWon > roundsLost) outcome = 'win';
+
+	const scoreboard: ScoreboardPlayerEntry[] = players
+		.map((p) => {
+			const subj = p.puuid.toLowerCase();
+			const agg = perPlayerAgg.get(subj) ?? { firstBloods: 0, kastRounds: 0, aces: 0 };
+			const pScore = p.stats?.score ?? 0;
+			const hs = p.stats?.headshots ?? 0;
+			const bs = p.stats?.bodyshots ?? 0;
+			const ls = p.stats?.legshots ?? 0;
+			const totalShots = hs + bs + ls;
+			const dmgDealt = p.stats?.damage?.dealt ?? 0;
+
+			return {
+				puuid: p.puuid,
+				gameName: p.name?.trim() ?? '',
+				tagLine: p.tag?.trim() ?? '',
+				teamId: p.team_id ?? 'Neutral',
+				characterId: (p.agent?.id ?? '').toLowerCase(),
+				competitiveTier: p.tier?.id ?? 0,
+				kills: p.stats?.kills ?? 0,
+				deaths: p.stats?.deaths ?? 0,
+				assists: p.stats?.assists ?? 0,
+				score: pScore,
+				acs: Math.round(pScore / roundsPlayed),
+				adr: Math.round((dmgDealt / roundsPlayed) * 10) / 10,
+				hsPercent: totalShots > 0 ? Math.round((hs / totalShots) * 1000) / 10 : 0,
+				firstBloods: agg.firstBloods
+			};
+		})
+		.sort((a, b) => b.acs - a.acs);
+
+	const topOverallScore = Math.max(0, ...players.map((p) => p.stats?.score ?? 0));
+	const teammates = players.filter((p) => (p.team_id ?? '').toLowerCase() === myTeamIdLower);
+	const topTeamScore = Math.max(0, ...teammates.map((p) => p.stats?.score ?? 0));
+	const myScore = me.stats.score ?? 0;
+	const myAgg = perPlayerAgg.get(targetPuuid) ?? { firstBloods: 0, kastRounds: 0, aces: 0 };
+	const matchIdLower = meta.match_id.toLowerCase();
+
+	return {
+		matchId: meta.match_id,
+		mapUrl: (meta.map?.id ?? '').toLowerCase(),
+		queueId,
+		seasonId: (meta.season?.id ?? '').toLowerCase(),
+		startedAt: meta.started_at ? new Date(meta.started_at).toISOString() : new Date().toISOString(),
+		durationSeconds: Math.round((meta.game_length_in_ms ?? 0) / 1000),
+		outcome,
+		roundsWon,
+		roundsLost,
+		roundsPlayed,
+		characterId: (me.agent?.id ?? '').toLowerCase(),
+		competitiveTier: me.tier?.id ?? 0,
+		rrDelta: rrDeltaByMatchId?.get(matchIdLower) ?? null,
+		isMatchMvp: myScore > 0 && myScore >= topOverallScore,
+		isTeamMvp: myScore > 0 && myScore >= topTeamScore && myScore < topOverallScore,
+		kills: me.stats.kills ?? 0,
+		deaths: me.stats.deaths ?? 0,
+		assists: me.stats.assists ?? 0,
+		score: myScore,
+		damageDealt: me.stats.damage?.dealt ?? 0,
+		damageReceived: me.stats.damage?.received ?? 0,
+		headshots: me.stats.headshots ?? 0,
+		bodyshots: me.stats.bodyshots ?? 0,
+		legshots: me.stats.legshots ?? 0,
+		kastRounds: rounds.length > 0 ? myAgg.kastRounds : Math.round(roundsPlayed * 0.72),
+		firstBloods: myAgg.firstBloods,
+		flawlessRounds: myFlawlessRounds,
+		aces: myAgg.aces,
+		scoreboard
+	};
+}
+
+interface HenrikStoredMatchPayload {
+	meta?: {
+		id?: string;
+		map?: { id?: string; name?: string };
+		mode?: string;
+		started_at?: string;
+		season?: { id?: string; short?: string };
+	};
+	stats?: {
+		puuid?: string;
+		team?: string;
+		character?: { id?: string; name?: string };
+		tier?: number;
+		score?: number;
+		kills?: number;
+		deaths?: number;
+		assists?: number;
+		shots?: { head?: number; body?: number; leg?: number };
+		damage?: { made?: number; received?: number };
+	};
+	teams?: {
+		red?: number;
+		blue?: number;
+	};
+}
+
+export function parseHenrikStoredMatch(
+	raw: unknown,
+	rrDeltaByMatchId?: ReadonlyMap<string, number>
+): StoredMatchRecord | null {
+	const item = raw as HenrikStoredMatchPayload;
+	const meta = item?.meta;
+	const stats = item?.stats;
+	if (!meta?.id || !stats) return null;
+
+	const queueId = normalizeHenrikQueueId(meta.mode);
+	const teamLower = (stats.team ?? 'red').toLowerCase();
+	const redRounds = item.teams?.red ?? 0;
+	const blueRounds = item.teams?.blue ?? 0;
+	const roundsWon = teamLower === 'blue' ? blueRounds : redRounds;
+	const roundsLost = teamLower === 'blue' ? redRounds : blueRounds;
+	const roundsPlayed = Math.max(1, redRounds + blueRounds || 1);
+
+	let outcome: 'win' | 'loss' | 'draw' = 'draw';
+	if (queueId === 'deathmatch') {
+		outcome = (stats.kills ?? 0) >= 40 ? 'win' : 'loss';
+	} else if (roundsWon > roundsLost) {
+		outcome = 'win';
+	} else if (roundsLost > roundsWon) {
+		outcome = 'loss';
+	}
+
+	const matchIdLower = meta.id.toLowerCase();
+
+	return {
+		matchId: meta.id,
+		mapUrl: (meta.map?.id ?? '').toLowerCase(),
+		queueId,
+		seasonId: (meta.season?.id ?? '').toLowerCase(),
+		startedAt: meta.started_at ? new Date(meta.started_at).toISOString() : new Date().toISOString(),
+		durationSeconds: 0,
+		outcome,
+		roundsWon,
+		roundsLost,
+		roundsPlayed,
+		characterId: (stats.character?.id ?? '').toLowerCase(),
+		competitiveTier: stats.tier ?? 0,
+		rrDelta: rrDeltaByMatchId?.get(matchIdLower) ?? null,
+		isMatchMvp: false,
+		isTeamMvp: false,
+		kills: stats.kills ?? 0,
+		deaths: stats.deaths ?? 0,
+		assists: stats.assists ?? 0,
+		score: stats.score ?? 0,
+		damageDealt: stats.damage?.made ?? 0,
+		damageReceived: stats.damage?.received ?? 0,
+		headshots: stats.shots?.head ?? 0,
+		bodyshots: stats.shots?.body ?? 0,
+		legshots: stats.shots?.leg ?? 0,
+		kastRounds: Math.min(roundsPlayed, Math.round(roundsPlayed * 0.72)),
+		firstBloods: 0,
+		flawlessRounds: 0,
+		aces: 0,
+		scoreboard: []
+	};
+}
+
+export function extractHenrikCareerProfile(params: {
+	rawAccount: unknown | null;
+	rawMmrV3: unknown | null;
+	latestRankedMatchId: string | null;
+	seasonsById: Map<string, SeasonMeta>;
+	fallbackProfile?: StoredCareerProfile | null;
+}): StoredCareerProfile | null {
+	const { rawAccount, rawMmrV3, latestRankedMatchId, seasonsById, fallbackProfile } = params;
+	const acc = rawAccount as {
+		account_level?: number;
+		card?: { id?: string };
+		title?: { id?: string };
+	} | null;
+	const mmr = rawMmrV3 as {
+		current?: { tier?: { id?: number }; rr?: number; last_change?: number };
+		peak?: { tier?: { id?: number }; season?: { id?: string } };
+		seasonal?: Array<{
+			season?: { id?: string };
+			wins?: number;
+			games?: number;
+			end_tier?: { id?: number };
+			end_rr?: number;
+			act_wins?: Array<{ id?: number }>;
+		}>;
+	} | null;
+
+	if (!acc && !mmr && !fallbackProfile) return null;
+
+	const actHistoryWithMs: Array<{ startMs: number; entry: StoredActHistoryEntry }> = [];
+	let peakTier = mmr?.peak?.tier?.id ?? fallbackProfile?.peakTier ?? 0;
+	let peakSeasonId = mmr?.peak?.season?.id?.toLowerCase() ?? fallbackProfile?.peakSeasonId ?? null;
+	let peakStartMs = peakSeasonId
+		? Date.parse(seasonsById.get(peakSeasonId)?.startTime ?? '') || 0
+		: -1;
+
+	for (const s of mmr?.seasonal ?? []) {
+		const sid = s.season?.id?.toLowerCase();
+		if (!sid) continue;
+		const endTier = s.end_tier?.id ?? 0;
+		const winTiers = (s.act_wins ?? []).map((w) => w.id ?? 0).filter((n) => n >= 3);
+		const maxTier = Math.max(endTier, ...winTiers);
+		const games = s.games ?? 0;
+		const wins = s.wins ?? 0;
+		const meta = seasonsById.get(sid);
+		const startMs = meta ? Date.parse(meta.startTime) : 0;
+
+		if (games > 0 || maxTier >= 3) {
+			actHistoryWithMs.push({
+				startMs,
+				entry: {
+					seasonId: sid,
+					tier: endTier,
+					peakTier: maxTier,
+					rr: s.end_rr ?? 0,
+					wins,
+					games
+				}
+			});
+		}
+
+		if (maxTier >= 3 && (maxTier > peakTier || (maxTier === peakTier && startMs >= peakStartMs))) {
+			peakTier = maxTier;
+			peakSeasonId = sid;
+			peakStartMs = startMs;
+		}
+	}
+
+	const actHistory =
+		actHistoryWithMs.length > 0
+			? actHistoryWithMs.sort((a, b) => b.startMs - a.startMs).map((x) => x.entry)
+			: (fallbackProfile?.actHistory ?? []);
+
+	const latestAct = actHistory[0] ?? null;
+
+	return {
+		accountLevel:
+			typeof acc?.account_level === 'number'
+				? acc.account_level
+				: (fallbackProfile?.accountLevel ?? null),
+		accountXp: fallbackProfile?.accountXp ?? null,
+		playerCardId: acc?.card?.id ?? fallbackProfile?.playerCardId ?? null,
+		playerTitleId: acc?.title?.id ?? fallbackProfile?.playerTitleId ?? null,
+		latestSeasonId: latestAct?.seasonId ?? fallbackProfile?.latestSeasonId ?? null,
+		currentTier: mmr?.current?.tier?.id ?? fallbackProfile?.currentTier ?? 0,
+		currentRr: mmr?.current?.rr ?? fallbackProfile?.currentRr ?? 0,
+		lastRrDelta:
+			typeof mmr?.current?.last_change === 'number'
+				? mmr.current.last_change
+				: (fallbackProfile?.lastRrDelta ?? null),
+		lastRankedMatchId: latestRankedMatchId ?? fallbackProfile?.lastRankedMatchId ?? null,
+		actWins: latestAct?.wins ?? fallbackProfile?.actWins ?? 0,
+		actGames: latestAct?.games ?? fallbackProfile?.actGames ?? 0,
+		peakTier,
+		peakSeasonId,
+		actHistory
 	};
 }
 

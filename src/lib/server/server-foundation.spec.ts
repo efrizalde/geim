@@ -15,8 +15,13 @@ import {
 import {
 	collectMissingNamePuuids,
 	extractCareerProfile,
+	extractHenrikCareerProfile,
 	hydrateMatchesWithAssets,
-	parseDetailedMatch
+	mergeStoredMatches,
+	normalizeHenrikQueueId,
+	parseDetailedMatch,
+	parseHenrikStoredMatch,
+	parseHenrikV4Match
 } from './providers/valorant/tracker';
 import { calculateProportionalValuation } from './valuation/money';
 
@@ -44,13 +49,15 @@ describe('AES-256-GCM session envelope (seal / open)', () => {
 });
 
 describe('secret redaction', () => {
-	it('redacts OAuth fragments, cookies, bearer tokens, JWTs, and JSON passwords', () => {
+	it('redacts OAuth fragments, cookies, bearer tokens, JWTs, JSON passwords, and HDEV API keys', () => {
 		const fakeJwt = 'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJwdXVpZC0xMjMifQ.signature123';
 		const dirty = [
 			`https://playvalorant.com/opt_in#access_token=${fakeJwt}&id_token=${fakeJwt}&expires_in=3600`,
 			'Cookie: ssid=supersecretssid; tdid=my_tdid; clid=ap1',
 			'Authorization: Bearer secret_bearer_tok',
-			'{"username":"player","password":"myHunter2Password"}'
+			'{"username":"player","password":"myHunter2Password"}',
+			'HenrikDev key HDEV-12345678-1234-1234-1234-1234567890ab leaked in logs',
+			'https://api.henrikdev.xyz/valorant/v1/account/NAON/EUY?api_key=HDEV-12345678-1234-1234-1234-1234567890ab'
 		].join(' | ');
 
 		const clean = redactSecrets(dirty);
@@ -58,6 +65,7 @@ describe('secret redaction', () => {
 		expect(clean).not.toContain('secret_bearer_tok');
 		expect(clean).not.toContain('myHunter2Password');
 		expect(clean).not.toContain(fakeJwt);
+		expect(clean).not.toContain('HDEV-12345678-1234-1234-1234-1234567890ab');
 		expect(clean).toContain('[REDACTED]');
 	});
 });
@@ -660,6 +668,359 @@ describe('VALORANT career profile & detailed match telemetry parser', () => {
 			tagLine: '',
 			agentName: 'Omen'
 		});
+	});
+
+	it('deduplicates, backfills competitive RR deltas, and sorts merged match records newest-first', () => {
+		const baseMatch = {
+			matchId: 'match-older',
+			mapUrl: '/Game/Maps/Ascent/Ascent',
+			queueId: 'competitive',
+			seasonId: 'season-prev',
+			startedAt: '2026-09-06T09:16:09.779Z',
+			durationSeconds: 1800,
+			outcome: 'loss' as const,
+			roundsWon: 8,
+			roundsLost: 13,
+			roundsPlayed: 21,
+			characterId: 'agent-clove',
+			competitiveTier: 11,
+			rrDelta: null,
+			isMatchMvp: false,
+			isTeamMvp: true,
+			kills: 18,
+			deaths: 16,
+			assists: 4,
+			score: 4200,
+			damageDealt: 3100,
+			damageReceived: 2900,
+			headshots: 14,
+			bodyshots: 30,
+			legshots: 2,
+			kastRounds: 15,
+			firstBloods: 2,
+			flawlessRounds: 0,
+			aces: 0,
+			scoreboard: []
+		};
+		const newerMatch = {
+			...baseMatch,
+			matchId: 'match-newer',
+			seasonId: 'season-current',
+			startedAt: '2026-10-24T16:01:21.602Z',
+			outcome: 'win' as const,
+			rrDelta: 21
+		};
+
+		const merged = mergeStoredMatches(
+			[baseMatch],
+			[newerMatch, { ...baseMatch, matchId: 'MATCH-OLDER' }],
+			new Map([['match-older', -16]])
+		);
+
+		expect(merged).toHaveLength(2);
+		expect(merged.map((m) => m.matchId.toLowerCase())).toEqual(['match-newer', 'match-older']);
+		expect(merged[0]?.rrDelta).toBe(21);
+		expect(merged[1]?.rrDelta).toBe(-16);
+	});
+});
+
+describe('HenrikDev tracker normalization', () => {
+	it('normalizes HenrikDev mode/queue names into internal queueIds', () => {
+		expect(normalizeHenrikQueueId('Competitive')).toBe('competitive');
+		expect(normalizeHenrikQueueId('Unrated')).toBe('unrated');
+		expect(normalizeHenrikQueueId('standard')).toBe('unrated');
+		expect(normalizeHenrikQueueId('Team Deathmatch')).toBe('hurm');
+		expect(normalizeHenrikQueueId('Custom Game')).toBe('custom');
+		expect(normalizeHenrikQueueId('Swiftplay')).toBe('swiftplay');
+		expect(normalizeHenrikQueueId('Deathmatch')).toBe('deathmatch');
+	});
+
+	it('parses a HenrikDev v4 match into a full StoredMatchRecord with scoreboard, KAST, FB, and aces', () => {
+		const raw = {
+			metadata: {
+				match_id: 'match-v4-1',
+				map: { id: 'map-abyss', name: 'Abyss' },
+				game_length_in_ms: 1800000,
+				started_at: '2026-10-24T16:01:21.602Z',
+				queue: { id: 'competitive', name: 'Competitive' },
+				season: { id: 'season-current', short: 'e11a6' }
+			},
+			players: [
+				{
+					puuid: 'owner-puuid',
+					name: 'NAON',
+					tag: 'EUY',
+					team_id: 'Red',
+					agent: { id: 'agent-clove', name: 'Clove' },
+					tier: { id: 12, name: 'Gold 1' },
+					stats: {
+						score: 620,
+						kills: 6,
+						deaths: 1,
+						assists: 1,
+						headshots: 2,
+						bodyshots: 4,
+						legshots: 0,
+						damage: { dealt: 500, received: 150 }
+					}
+				},
+				{
+					puuid: 'ally-puuid',
+					name: 'Ally',
+					tag: '001',
+					team_id: 'Red',
+					agent: { id: 'agent-jett', name: 'Jett' },
+					tier: { id: 13, name: 'Gold 2' },
+					stats: {
+						score: 310,
+						kills: 1,
+						deaths: 0,
+						assists: 1,
+						headshots: 0,
+						bodyshots: 2,
+						legshots: 0,
+						damage: { dealt: 200, received: 100 }
+					}
+				},
+				{
+					puuid: 'enemy-puuid',
+					name: 'Enemy',
+					tag: '999',
+					team_id: 'Blue',
+					agent: { id: 'agent-omen', name: 'Omen' },
+					tier: { id: 12, name: 'Gold 1' },
+					stats: {
+						score: 210,
+						kills: 1,
+						deaths: 7,
+						assists: 0,
+						headshots: 1,
+						bodyshots: 2,
+						legshots: 0,
+						damage: { dealt: 250, received: 700 }
+					}
+				}
+			],
+			teams: [
+				{ team_id: 'Red', won: true, rounds: { won: 2, lost: 0 } },
+				{ team_id: 'Blue', won: false, rounds: { won: 0, lost: 2 } }
+			],
+			rounds: [
+				{
+					id: 0,
+					result: 'Elimination',
+					ceremony: 'CeremonyFlawless',
+					winning_team: 'Red',
+					first_blood: { puuid: 'owner-puuid' }
+				},
+				{
+					id: 1,
+					result: 'Elimination',
+					ceremony: 'CeremonyDefault',
+					winning_team: 'Red',
+					first_blood: { puuid: 'enemy-puuid' }
+				}
+			],
+			kills: [
+				{
+					round: 0,
+					time_in_round_in_ms: 12000,
+					killer: { puuid: 'owner-puuid' },
+					victim: { puuid: 'enemy-puuid' },
+					assistants: []
+				},
+				{
+					round: 0,
+					time_in_round_in_ms: 15000,
+					killer: { puuid: 'owner-puuid' },
+					victim: { puuid: 'e2' },
+					assistants: [{ puuid: 'ally-puuid' }]
+				},
+				{
+					round: 0,
+					time_in_round_in_ms: 18000,
+					killer: { puuid: 'owner-puuid' },
+					victim: { puuid: 'e3' },
+					assistants: []
+				},
+				{
+					round: 0,
+					time_in_round_in_ms: 22000,
+					killer: { puuid: 'owner-puuid' },
+					victim: { puuid: 'e4' },
+					assistants: []
+				},
+				{
+					round: 0,
+					time_in_round_in_ms: 26000,
+					killer: { puuid: 'owner-puuid' },
+					victim: { puuid: 'e5' },
+					assistants: []
+				},
+				{
+					round: 1,
+					time_in_round_in_ms: 20000,
+					killer: { puuid: 'enemy-puuid' },
+					victim: { puuid: 'owner-puuid' },
+					assistants: []
+				},
+				{
+					round: 1,
+					time_in_round_in_ms: 23500,
+					killer: { puuid: 'ally-puuid' },
+					victim: { puuid: 'enemy-puuid' },
+					assistants: []
+				}
+			]
+		};
+
+		const parsed = parseHenrikV4Match(raw, 'owner-puuid', new Map([['match-v4-1', 21]]));
+
+		expect(parsed).not.toBeNull();
+		expect(parsed?.queueId).toBe('competitive');
+		expect(parsed?.seasonId).toBe('season-current');
+		expect(parsed?.outcome).toBe('win');
+		expect(parsed?.roundsWon).toBe(2);
+		expect(parsed?.rrDelta).toBe(21);
+		expect(parsed?.isMatchMvp).toBe(true);
+		expect(parsed?.damageDealt).toBe(500);
+		expect(parsed?.headshots).toBe(2);
+		expect(parsed?.firstBloods).toBe(1);
+		expect(parsed?.flawlessRounds).toBe(1);
+		expect(parsed?.aces).toBe(1);
+		expect(parsed?.kastRounds).toBe(2);
+		expect(parsed?.scoreboard).toHaveLength(3);
+		expect(parsed?.scoreboard[0]?.puuid).toBe('owner-puuid');
+		expect(parsed?.scoreboard.find((p) => p.puuid === 'ally-puuid')?.gameName).toBe('Ally');
+	});
+
+	it('parses a HenrikDev stored-match summary (no scoreboard, kept for hydration)', () => {
+		const raw = {
+			meta: {
+				id: 'match-stored-1',
+				map: { id: 'map-icebox', name: 'Icebox' },
+				mode: 'Competitive',
+				started_at: '2024-06-29T04:39:45.243Z',
+				season: { id: 'season-e9a1', short: 'e9a1' }
+			},
+			stats: {
+				puuid: 'owner-puuid',
+				team: 'Red',
+				character: { id: 'agent-kayo', name: 'KAY/O' },
+				tier: 18,
+				score: 9000,
+				kills: 32,
+				deaths: 19,
+				assists: 11,
+				shots: { head: 20, body: 60, leg: 8 },
+				damage: { made: 5200, received: 4100 }
+			},
+			teams: { red: 13, blue: 10 }
+		};
+
+		const parsed = parseHenrikStoredMatch(raw, new Map([['match-stored-1', -8]]));
+
+		expect(parsed).not.toBeNull();
+		expect(parsed?.queueId).toBe('competitive');
+		expect(parsed?.seasonId).toBe('season-e9a1');
+		expect(parsed?.outcome).toBe('win');
+		expect(parsed?.roundsWon).toBe(13);
+		expect(parsed?.roundsLost).toBe(10);
+		expect(parsed?.rrDelta).toBe(-8);
+		expect(parsed?.kills).toBe(32);
+		expect(parsed?.scoreboard).toHaveLength(0);
+	});
+
+	it('extracts HenrikDev career profile with full act history, peak tier, and current rank', () => {
+		const seasonsById = new Map([
+			[
+				'season-old',
+				{
+					uuid: 'season-old',
+					actName: 'ACT II',
+					fullLabel: 'V25: ACT II',
+					startTime: '2025-03-01T00:00:00Z',
+					endTime: '2025-05-01T00:00:00Z'
+				}
+			],
+			[
+				'season-newer',
+				{
+					uuid: 'season-newer',
+					actName: 'ACT VI',
+					fullLabel: 'V25: ACT VI',
+					startTime: '2025-10-15T00:00:00Z',
+					endTime: '2026-01-07T00:00:00Z'
+				}
+			],
+			[
+				'season-current',
+				{
+					uuid: 'season-current',
+					actName: 'ACT VI',
+					fullLabel: 'V26: ACT VI',
+					startTime: '2026-10-14T00:00:00Z',
+					endTime: '2027-01-06T00:00:00Z'
+				}
+			]
+		]);
+
+		const profile = extractHenrikCareerProfile({
+			rawAccount: {
+				account_level: 230,
+				card: { id: 'card-f33a' },
+				title: { id: 'title-abc' }
+			},
+			rawMmrV3: {
+				current: { tier: { id: 12 }, rr: 31, last_change: 21 },
+				peak: { tier: { id: 18 }, season: { id: 'season-newer' } },
+				seasonal: [
+					{
+						season: { id: 'season-current' },
+						wins: 3,
+						games: 3,
+						end_tier: { id: 12 },
+						end_rr: 31,
+						act_wins: [{ id: 12 }, { id: 12 }, { id: 12 }]
+					},
+					{
+						season: { id: 'season-newer' },
+						wins: 58,
+						games: 114,
+						end_tier: { id: 17 },
+						end_rr: 0,
+						act_wins: [{ id: 18 }]
+					},
+					{
+						season: { id: 'season-old' },
+						wins: 32,
+						games: 66,
+						end_tier: { id: 15 },
+						end_rr: 0,
+						act_wins: [{ id: 16 }]
+					}
+				]
+			},
+			latestRankedMatchId: 'match-latest-1',
+			seasonsById
+		});
+
+		expect(profile).not.toBeNull();
+		expect(profile?.accountLevel).toBe(230);
+		expect(profile?.playerCardId).toBe('card-f33a');
+		expect(profile?.currentTier).toBe(12);
+		expect(profile?.currentRr).toBe(31);
+		expect(profile?.lastRrDelta).toBe(21);
+		expect(profile?.peakTier).toBe(18);
+		expect(profile?.peakSeasonId).toBe('season-newer');
+		expect(profile?.latestSeasonId).toBe('season-current');
+		expect(profile?.actWins).toBe(3);
+		expect(profile?.actGames).toBe(3);
+		expect(profile?.actHistory?.map((a) => a.seasonId)).toEqual([
+			'season-current',
+			'season-newer',
+			'season-old'
+		]);
 	});
 });
 

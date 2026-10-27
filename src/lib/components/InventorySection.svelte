@@ -321,7 +321,9 @@
 
 <section class="flex flex-col gap-5">
 	<!-- Frosted Glass × Neumorphic Valuation & Collection Telemetry Deck -->
-	<div class="glass-neu grid gap-3 rounded-2xl p-3.5 sm:gap-4 sm:p-5 lg:grid-cols-12 lg:items-stretch">
+	<div
+		class="glass-neu grid gap-3 rounded-2xl p-3.5 sm:gap-4 sm:p-5 lg:grid-cols-12 lg:items-stretch"
+	>
 		<!-- Left (5 cols): Framed Atmospheric Valuation Vault + Origin Mix + Basis -->
 		<div
 			class="neu-well relative flex flex-col justify-between gap-3.5 overflow-hidden rounded-xl p-4 sm:p-5 lg:col-span-5"
@@ -376,11 +378,7 @@
 
 			<!-- 2. Interactive Collection Origin Breakdown (Quick Filter Shortcuts) -->
 			<div class="relative z-10 grid grid-cols-3 gap-2">
-				{#each [
-					{ id: 'store' as const, label: 'Store', count: collectionMix.storeCount },
-					{ id: 'battle_pass' as const, label: 'Battle Pass', count: collectionMix.bpCount },
-					{ id: 'melee' as const, label: 'Melee', count: collectionMix.meleeCount }
-				] as origin (origin.id)}
+				{#each [{ id: 'store' as const, label: 'Store', count: collectionMix.storeCount }, { id: 'battle_pass' as const, label: 'Battle Pass', count: collectionMix.bpCount }, { id: 'melee' as const, label: 'Melee', count: collectionMix.meleeCount }] as origin (origin.id)}
 					{@const isOriginActive = invFilter === origin.id}
 					<button
 						type="button"
@@ -398,7 +396,9 @@
 						>
 							{origin.label}
 						</span>
-						<span class="mt-0.5 font-display text-sm font-extrabold text-white tabular-nums sm:text-base">
+						<span
+							class="mt-0.5 font-display text-sm font-extrabold text-white tabular-nums sm:text-base"
+						>
 							{origin.count}
 						</span>
 					</button>
@@ -429,7 +429,9 @@
 			<!-- Row 1: Unified Owned Skins (Priced/Unpriced) + Compact Unlocks Telemetry Pod -->
 			<div class="grid grid-cols-1 gap-3 sm:grid-cols-12">
 				<!-- 1A. Unified Owned Skins Section (Total + Priced & Unpriced in One Section) -->
-				<div class="neu-well flex flex-col justify-between gap-2.5 rounded-xl p-3.5 sm:col-span-7 sm:px-4">
+				<div
+					class="neu-well flex flex-col justify-between gap-2.5 rounded-xl p-3.5 sm:col-span-7 sm:px-4"
+				>
 					<div class="flex flex-wrap items-center justify-between gap-2">
 						<div class="flex items-baseline gap-2.5">
 							<span
@@ -450,8 +452,7 @@
 							<div
 								class="neu-well-sm inline-flex items-center gap-1.5 rounded-lg border border-emerald-400/25 px-2 py-0.5"
 							>
-								<span
-									class="h-1.5 w-1.5 rounded-full bg-emerald-400 shadow-[0_0_6px_#34d399]"
+								<span class="h-1.5 w-1.5 rounded-full bg-emerald-400 shadow-[0_0_6px_#34d399]"
 								></span>
 								<span class="font-mono text-[10px] font-semibold text-slate-300 uppercase">
 									Priced
@@ -502,10 +503,14 @@
 						class="flex flex-col items-center justify-center px-1.5 text-center"
 						title="Level Unlocks"
 					>
-						<span class="font-display text-lg leading-tight font-extrabold text-white tabular-nums sm:text-xl">
+						<span
+							class="font-display text-lg leading-tight font-extrabold text-white tabular-nums sm:text-xl"
+						>
 							{inventory.rawSkinLevelCount}
 						</span>
-						<span class="mt-0.5 font-mono text-[9px] font-semibold tracking-wider text-slate-400 uppercase sm:text-[10px]">
+						<span
+							class="mt-0.5 font-mono text-[9px] font-semibold tracking-wider text-slate-400 uppercase sm:text-[10px]"
+						>
 							Levels
 						</span>
 					</div>
@@ -513,10 +518,14 @@
 						class="flex flex-col items-center justify-center px-1.5 text-center"
 						title="Chroma Unlocks"
 					>
-						<span class="font-display text-lg leading-tight font-extrabold text-white tabular-nums sm:text-xl">
+						<span
+							class="font-display text-lg leading-tight font-extrabold text-white tabular-nums sm:text-xl"
+						>
 							{inventory.rawChromaCount}
 						</span>
-						<span class="mt-0.5 font-mono text-[9px] font-semibold tracking-wider text-slate-400 uppercase sm:text-[10px]">
+						<span
+							class="mt-0.5 font-mono text-[9px] font-semibold tracking-wider text-slate-400 uppercase sm:text-[10px]"
+						>
 							Chromas
 						</span>
 					</div>
@@ -524,10 +533,14 @@
 						class="flex flex-col items-center justify-center px-1.5 text-center"
 						title="Gun Buddies"
 					>
-						<span class="font-display text-lg leading-tight font-extrabold text-white tabular-nums sm:text-xl">
+						<span
+							class="font-display text-lg leading-tight font-extrabold text-white tabular-nums sm:text-xl"
+						>
 							{inventory.buddyCount ?? '—'}
 						</span>
-						<span class="mt-0.5 font-mono text-[9px] font-semibold tracking-wider text-slate-400 uppercase sm:text-[10px]">
+						<span
+							class="mt-0.5 font-mono text-[9px] font-semibold tracking-wider text-slate-400 uppercase sm:text-[10px]"
+						>
 							Buddies
 						</span>
 					</div>

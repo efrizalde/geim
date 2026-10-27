@@ -1,5 +1,5 @@
 import { and, desc, eq } from 'drizzle-orm';
-import { ENCRYPTION_MASTER_KEY } from '$app/env/private';
+import { ENCRYPTION_MASTER_KEY, HENRIKDEV_API_KEY } from '$app/env/private';
 import { safeErrorMessage } from '../../crypto/redact';
 import { openPayload, sealPayload } from '../../crypto/seal';
 import { getDb, schema } from '../../db';
@@ -15,7 +15,10 @@ import {
 import {
 	attemptDirectLogin,
 	fetchAccountXpRaw,
+	fetchCompetitiveUpdates,
 	fetchEntitlementsToken,
+	fetchHenrikMatchV4Raw,
+	fetchHenrikTrackerBundle,
 	fetchMatchDetailsRaw,
 	fetchMatchHistory,
 	fetchOwnedCategory,
@@ -42,8 +45,12 @@ import {
 import {
 	collectMissingNamePuuids,
 	extractCareerProfile,
+	extractHenrikCareerProfile,
 	hydrateMatchesWithAssets,
+	mergeStoredMatches,
 	parseDetailedMatch,
+	parseHenrikStoredMatch,
+	parseHenrikV4Match,
 	type HydratedMatchItem,
 	type StoredCareerProfile,
 	type StoredMatchRecord
@@ -267,13 +274,137 @@ async function finalizeAndSyncLinkedAccount(
 	};
 }
 
+async function syncTrackerWithHenrikDev(params: {
+	account: typeof schema.linkedAccounts.$inferSelect;
+	apiKey: string;
+	hydrateScoreboardLimit?: number;
+}): Promise<boolean> {
+	const { account, apiKey, hydrateScoreboardLimit = 12 } = params;
+	const db = getDb();
+	try {
+		const [assets, bundle, prevRows] = await Promise.all([
+			getValorantAssetIndex(),
+			fetchHenrikTrackerBundle({
+				puuid: account.puuid,
+				gameName: account.gameName,
+				tagLine: account.tagLine,
+				region: account.region,
+				apiKey
+			}),
+			db
+				.select()
+				.from(schema.trackerSnapshots)
+				.where(eq(schema.trackerSnapshots.linkedAccountId, account.id))
+				.orderBy(desc(schema.trackerSnapshots.fetchedAt))
+				.limit(5)
+		]);
+
+		let existingMatches: StoredMatchRecord[] = [];
+		for (const row of [...prevRows].reverse()) {
+			const rowMatches = (row.matchesJson as StoredMatchRecord[]) ?? [];
+			existingMatches = mergeStoredMatches(existingMatches, rowMatches, bundle.rrDeltaByMatchId);
+		}
+		const prevCareer = (prevRows[0]?.profileJson as StoredCareerProfile) ?? null;
+
+		const v4Parsed = bundle.v4Matches
+			.map((raw) => parseHenrikV4Match(raw, account.puuid, bundle.rrDeltaByMatchId))
+			.filter((m): m is StoredMatchRecord => m !== null);
+		const storedParsed = bundle.storedMatches
+			.map((raw) => parseHenrikStoredMatch(raw, bundle.rrDeltaByMatchId))
+			.filter((m): m is StoredMatchRecord => m !== null);
+
+		let merged = mergeStoredMatches(existingMatches, storedParsed, bundle.rrDeltaByMatchId);
+		merged = mergeStoredMatches(merged, v4Parsed, bundle.rrDeltaByMatchId);
+
+		// Hydrate full 10-player scoreboards for stored matches missing a scoreboard (bounded per sync)
+		const missingScoreboardIds = merged
+			.filter((m) => m.scoreboard.length === 0)
+			.slice(0, hydrateScoreboardLimit)
+			.map((m) => m.matchId);
+
+		const hydratedV4Records: StoredMatchRecord[] = [];
+		const BATCH_SIZE = 4;
+		for (let i = 0; i < missingScoreboardIds.length; i += BATCH_SIZE) {
+			const batch = missingScoreboardIds.slice(i, i + BATCH_SIZE);
+			const settled = await Promise.allSettled(
+				batch.map((id) => fetchHenrikMatchV4Raw(account.region, id, apiKey))
+			);
+			for (const r of settled) {
+				if (r.status === 'fulfilled' && r.value) {
+					const parsed = parseHenrikV4Match(r.value, account.puuid, bundle.rrDeltaByMatchId);
+					if (parsed) hydratedV4Records.push(parsed);
+				}
+			}
+		}
+
+		if (hydratedV4Records.length > 0) {
+			merged = mergeStoredMatches(merged, hydratedV4Records, bundle.rrDeltaByMatchId);
+		}
+
+		const careerProfile = extractHenrikCareerProfile({
+			rawAccount: bundle.account,
+			rawMmrV3: bundle.mmrV3,
+			latestRankedMatchId: bundle.latestRankedMatchId,
+			seasonsById: assets.seasonsById,
+			fallbackProfile: prevCareer
+		});
+
+		if (!careerProfile && merged.length === 0) return false;
+
+		const syncedAt = new Date();
+		await db.insert(schema.trackerSnapshots).values({
+			linkedAccountId: account.id,
+			fetchedAt: syncedAt,
+			profileJson: careerProfile ??
+				prevCareer ?? {
+					accountLevel: null,
+					accountXp: null,
+					playerCardId: null,
+					playerTitleId: null,
+					latestSeasonId: null,
+					currentTier: 0,
+					currentRr: 0,
+					lastRrDelta: null,
+					lastRankedMatchId: null,
+					actWins: 0,
+					actGames: 0,
+					peakTier: 0,
+					peakSeasonId: null,
+					actHistory: []
+				},
+			matchesJson: merged,
+			parserVersion: 3
+		});
+
+		const hAcc = bundle.account as { name?: string; tag?: string } | null;
+		await db
+			.update(schema.linkedAccounts)
+			.set({
+				...(hAcc?.name?.trim()
+					? {
+							gameName: hAcc.name.trim(),
+							tagLine: hAcc.tag?.trim() || account.tagLine
+						}
+					: {}),
+				lastSyncedAt: syncedAt,
+				updatedAt: syncedAt
+			})
+			.where(eq(schema.linkedAccounts.id, account.id));
+
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 export async function syncValorantAccountData(
 	userId: string,
 	accountId: string,
-	opts: { bypassCooldown?: boolean } = {}
+	opts: { bypassCooldown?: boolean; deepHistory?: boolean } = {}
 ): Promise<{ ok: boolean; error?: string }> {
 	const db = getDb();
 	const masterKey = requireMasterKey();
+	const henrikKey = HENRIKDEV_API_KEY?.trim() || '';
 
 	const accRows = await db
 		.select()
@@ -294,6 +425,16 @@ export async function syncValorantAccountData(
 		return { ok: true };
 	}
 
+	// When the user explicitly requests Fetch Deep History and HenrikDev is configured, run HenrikDev directly
+	if (opts.deepHistory && henrikKey) {
+		const ok = await syncTrackerWithHenrikDev({
+			account,
+			apiKey: henrikKey,
+			hydrateScoreboardLimit: 20
+		});
+		if (ok) return { ok: true };
+	}
+
 	const sessRows = await db
 		.select()
 		.from(schema.providerSessions)
@@ -306,6 +447,10 @@ export async function syncValorantAccountData(
 			.update(schema.linkedAccounts)
 			.set({ connectionStatus: 'reconnect_required', updatedAt: new Date() })
 			.where(eq(schema.linkedAccounts.id, accountId));
+		if (henrikKey) {
+			const hOk = await syncTrackerWithHenrikDev({ account, apiKey: henrikKey });
+			if (hOk && opts.deepHistory) return { ok: true };
+		}
 		return { ok: false, error: 'Session missing; please reconnect Riot account.' };
 	}
 
@@ -329,6 +474,18 @@ export async function syncValorantAccountData(
 				.update(schema.linkedAccounts)
 				.set({ connectionStatus: 'reconnect_required', updatedAt: new Date() })
 				.where(eq(schema.linkedAccounts.id, accountId));
+			if (henrikKey) {
+				const hOk = await syncTrackerWithHenrikDev({ account, apiKey: henrikKey });
+				if (hOk) {
+					return opts.deepHistory
+						? { ok: true }
+						: {
+								ok: false,
+								error:
+									'Tracker match history synced via HenrikDev. Reconnect Riot URL/ssid to refresh Daily Shop & Inventory.'
+							};
+				}
+			}
 			return {
 				ok: false,
 				error: 'Short-lived Riot token expired. Paste a fresh Redirect URL or add an ssid cookie.'
@@ -341,6 +498,10 @@ export async function syncValorantAccountData(
 				.update(schema.linkedAccounts)
 				.set({ connectionStatus: 'reconnect_required', updatedAt: new Date() })
 				.where(eq(schema.linkedAccounts.id, accountId));
+			if (henrikKey) {
+				const hOk = await syncTrackerWithHenrikDev({ account, apiKey: henrikKey });
+				if (hOk && opts.deepHistory) return { ok: true };
+			}
 			return {
 				ok: false,
 				error: `Session renewal failed (${renewed.status}). Please reconnect your Riot account.`
@@ -381,17 +542,36 @@ export async function syncValorantAccountData(
 			clientVersion
 		};
 
-		const [storeRes, walletRes, skinsRes, chromasRes, buddiesRes, matchesRes, xpRes, mmrRes] =
-			await Promise.allSettled([
-				fetchStorefront(ctx),
-				fetchWallet(ctx),
-				fetchOwnedCategory(ctx, 'SKIN_LEVELS'),
-				fetchOwnedCategory(ctx, 'SKIN_CHROMAS'),
-				fetchOwnedCategory(ctx, 'BUDDIES'),
-				fetchMatchHistory(ctx, 15),
-				fetchAccountXpRaw(ctx),
-				fetchPlayerMmrRaw(ctx)
-			]);
+		const [
+			storeRes,
+			walletRes,
+			skinsRes,
+			chromasRes,
+			buddiesRes,
+			matchesRes,
+			compMatchesRes,
+			compUpdatesRes,
+			xpRes,
+			mmrRes,
+			prevTrackerRows
+		] = await Promise.allSettled([
+			fetchStorefront(ctx),
+			fetchWallet(ctx),
+			fetchOwnedCategory(ctx, 'SKIN_LEVELS'),
+			fetchOwnedCategory(ctx, 'SKIN_CHROMAS'),
+			fetchOwnedCategory(ctx, 'BUDDIES'),
+			fetchMatchHistory(ctx, { startIndex: 0, endIndex: 20 }),
+			fetchMatchHistory(ctx, { startIndex: 0, endIndex: 20, queue: 'competitive' }),
+			fetchCompetitiveUpdates(ctx, { startIndex: 0, endIndex: 20, queue: 'competitive' }),
+			fetchAccountXpRaw(ctx),
+			fetchPlayerMmrRaw(ctx),
+			db
+				.select()
+				.from(schema.trackerSnapshots)
+				.where(eq(schema.trackerSnapshots.linkedAccountId, accountId))
+				.orderBy(desc(schema.trackerSnapshots.fetchedAt))
+				.limit(5)
+		]);
 
 		const syncedAt = new Date();
 
@@ -445,26 +625,155 @@ export async function syncValorantAccountData(
 			});
 		}
 
-		// Fetch full match details for recent matches & extract rich career profile
-		const matchIds =
-			matchesRes.status === 'fulfilled'
-				? matchesRes.value.History.slice(0, 15).map((h) => h.MatchID)
-				: [];
+		// Paginate additional Riot PD match-history & competitive-updates slices when available
+		const maxGeneralIndex = opts.deepHistory ? 100 : 60;
+		const maxCompIndex = opts.deepHistory ? 80 : 40;
+		const extraPagesPromises: Array<Promise<unknown>> = [];
+		if (matchesRes.status === 'fulfilled' && matchesRes.value.Total > matchesRes.value.EndIndex) {
+			const total = Math.min(matchesRes.value.Total, maxGeneralIndex);
+			for (let start = matchesRes.value.EndIndex; start < total; start += 20) {
+				extraPagesPromises.push(
+					fetchMatchHistory(ctx, { startIndex: start, endIndex: Math.min(start + 20, total) })
+				);
+			}
+		}
+		if (
+			compMatchesRes.status === 'fulfilled' &&
+			compMatchesRes.value.Total > compMatchesRes.value.EndIndex
+		) {
+			const totalComp = Math.min(compMatchesRes.value.Total, maxCompIndex);
+			for (let start = compMatchesRes.value.EndIndex; start < totalComp; start += 20) {
+				extraPagesPromises.push(
+					fetchMatchHistory(ctx, {
+						startIndex: start,
+						endIndex: Math.min(start + 20, totalComp),
+						queue: 'competitive'
+					})
+				);
+			}
+		}
+		if (opts.deepHistory) {
+			for (const q of ['unrated', 'deathmatch', 'swiftplay']) {
+				extraPagesPromises.push(fetchMatchHistory(ctx, { startIndex: 0, endIndex: 20, queue: q }));
+			}
+		}
+		if (compUpdatesRes.status === 'fulfilled' && compUpdatesRes.value.Matches.length >= 15) {
+			extraPagesPromises.push(
+				fetchCompetitiveUpdates(ctx, { startIndex: 20, endIndex: 40, queue: 'competitive' })
+			);
+			if (opts.deepHistory) {
+				extraPagesPromises.push(
+					fetchCompetitiveUpdates(ctx, { startIndex: 40, endIndex: 60, queue: 'competitive' })
+				);
+			}
+		}
 
-		const detailSettled = await Promise.allSettled(
-			matchIds.map((id) => fetchMatchDetailsRaw(ctx, id))
+		const extraPagesSettled =
+			extraPagesPromises.length > 0 ? await Promise.allSettled(extraPagesPromises) : [];
+
+		const rrDeltaByMatchId = new Map<string, number>();
+		const orderedMatchIds: string[] = [];
+		const seenMatchIds = new Set<string>();
+		const pushMatchId = (id: string | undefined) => {
+			const trimmed = id?.trim();
+			if (!trimmed) return;
+			const lower = trimmed.toLowerCase();
+			if (seenMatchIds.has(lower)) return;
+			seenMatchIds.add(lower);
+			orderedMatchIds.push(trimmed);
+		};
+
+		if (matchesRes.status === 'fulfilled') {
+			for (const h of matchesRes.value.History) pushMatchId(h.MatchID);
+		}
+		if (compMatchesRes.status === 'fulfilled') {
+			for (const h of compMatchesRes.value.History) pushMatchId(h.MatchID);
+		}
+		if (compUpdatesRes.status === 'fulfilled') {
+			for (const u of compUpdatesRes.value.Matches) {
+				pushMatchId(u.MatchID);
+				if (typeof u.RankedRatingEarned === 'number') {
+					rrDeltaByMatchId.set(u.MatchID.toLowerCase(), u.RankedRatingEarned);
+				}
+			}
+		}
+		for (const res of extraPagesSettled) {
+			if (res.status !== 'fulfilled' || !res.value || typeof res.value !== 'object') continue;
+			const val = res.value as {
+				History?: Array<{ MatchID: string }>;
+				Matches?: Array<{ MatchID: string; RankedRatingEarned?: number }>;
+			};
+			for (const h of val.History ?? []) pushMatchId(h.MatchID);
+			for (const u of val.Matches ?? []) {
+				pushMatchId(u.MatchID);
+				if (typeof u.RankedRatingEarned === 'number') {
+					rrDeltaByMatchId.set(u.MatchID.toLowerCase(), u.RankedRatingEarned);
+				}
+			}
+		}
+
+		// Reuse previously indexed match records so we only fetch details for new matches
+		let existingMatches: StoredMatchRecord[] = [];
+		let prevCareer: StoredCareerProfile | null = null;
+		if (prevTrackerRows.status === 'fulfilled') {
+			for (const row of [...prevTrackerRows.value].reverse()) {
+				const rowMatches = (row.matchesJson as StoredMatchRecord[]) ?? [];
+				existingMatches = mergeStoredMatches(existingMatches, rowMatches, rrDeltaByMatchId);
+			}
+			prevCareer = (prevTrackerRows.value[0]?.profileJson as StoredCareerProfile) ?? null;
+		}
+		const existingById = new Map(existingMatches.map((m) => [m.matchId.toLowerCase(), m]));
+
+		// Always fetch the newest match (for fresh playerCard/title) + any unindexed match IDs (bounded)
+		const newestMatchId = orderedMatchIds[0];
+		const missingMatchIds = orderedMatchIds.filter(
+			(id, idx) => idx === 0 || !existingById.has(id.toLowerCase())
 		);
-		const rawMatchPayloads = detailSettled
-			.filter((r): r is PromiseFulfilledResult<unknown> => r.status === 'fulfilled')
-			.map((r) => r.value);
+		const idsToFetch = missingMatchIds.slice(0, 35);
+
+		// ponytail: batch size 8 keeps Riot PD concurrency safe without a queue dependency
+		const rawMatchPayloads: unknown[] = [];
+		let latestMatchRaw: unknown | null = null;
+		const BATCH_SIZE = 8;
+		for (let i = 0; i < idsToFetch.length; i += BATCH_SIZE) {
+			const batch = idsToFetch.slice(i, i + BATCH_SIZE);
+			const settled = await Promise.allSettled(batch.map((id) => fetchMatchDetailsRaw(ctx, id)));
+			settled.forEach((r, idx) => {
+				if (r.status === 'fulfilled') {
+					rawMatchPayloads.push(r.value);
+					if (newestMatchId && batch[idx]?.toLowerCase() === newestMatchId.toLowerCase()) {
+						latestMatchRaw = r.value;
+					}
+				}
+			});
+		}
 
 		const careerProfile = extractCareerProfile({
 			rawXp: xpRes.status === 'fulfilled' ? xpRes.value : null,
 			rawMmr: mmrRes.status === 'fulfilled' ? mmrRes.value : null,
-			latestMatchRaw: rawMatchPayloads[0] ?? null,
+			latestMatchRaw: latestMatchRaw ?? rawMatchPayloads[0] ?? null,
 			ownerPuuid: account.puuid,
 			seasonsById: assets.seasonsById
 		});
+		if (!careerProfile.playerCardId && prevCareer?.playerCardId) {
+			careerProfile.playerCardId = prevCareer.playerCardId;
+		}
+		if (!careerProfile.playerTitleId && prevCareer?.playerTitleId) {
+			careerProfile.playerTitleId = prevCareer.playerTitleId;
+		}
+		if (careerProfile.accountLevel === null && prevCareer?.accountLevel !== null) {
+			careerProfile.accountLevel = prevCareer?.accountLevel ?? null;
+		}
+		if (
+			careerProfile.lastRankedMatchId &&
+			typeof careerProfile.lastRrDelta === 'number' &&
+			!rrDeltaByMatchId.has(careerProfile.lastRankedMatchId.toLowerCase())
+		) {
+			rrDeltaByMatchId.set(
+				careerProfile.lastRankedMatchId.toLowerCase(),
+				careerProfile.lastRrDelta
+			);
+		}
 
 		const missingNamePuuids = collectMissingNamePuuids(rawMatchPayloads);
 		if (!account.gameName.trim() || account.gameName === 'Unknown') {
@@ -482,7 +791,7 @@ export async function syncValorantAccountData(
 			});
 		}
 
-		const parsedMatches: StoredMatchRecord[] = rawMatchPayloads
+		const newlyParsedMatches: StoredMatchRecord[] = rawMatchPayloads
 			.map((raw) =>
 				parseDetailedMatch(
 					raw,
@@ -491,18 +800,25 @@ export async function syncValorantAccountData(
 						matchId: careerProfile.lastRankedMatchId,
 						rrDelta: careerProfile.lastRrDelta
 					},
-					resolvedNamesByPuuid
+					resolvedNamesByPuuid,
+					rrDeltaByMatchId
 				)
 			)
 			.filter((m): m is StoredMatchRecord => m !== null);
+
+		const mergedMatches = mergeStoredMatches(existingMatches, newlyParsedMatches, rrDeltaByMatchId);
 
 		await db.insert(schema.trackerSnapshots).values({
 			linkedAccountId: accountId,
 			fetchedAt: syncedAt,
 			profileJson: careerProfile,
-			matchesJson: parsedMatches,
-			parserVersion: 1
+			matchesJson: mergedMatches,
+			parserVersion: 2
 		});
+
+		if (henrikKey) {
+			await syncTrackerWithHenrikDev({ account, apiKey: henrikKey, hydrateScoreboardLimit: 12 });
+		}
 
 		const refreshedOwnerIdentity = resolvedNamesByPuuid.get(account.puuid.toLowerCase());
 		await db
@@ -692,7 +1008,7 @@ export async function loadDashboardView(
 			.from(schema.trackerSnapshots)
 			.where(eq(schema.trackerSnapshots.linkedAccountId, activeAccount.id))
 			.orderBy(desc(schema.trackerSnapshots.fetchedAt))
-			.limit(1)
+			.limit(5)
 	]);
 
 	const estimateSingleVp = (vp: number | null): string | null => {
@@ -949,7 +1265,11 @@ export async function loadDashboardView(
 	if (latestTrackerRows[0]) {
 		const tRow = latestTrackerRows[0];
 		const career = tRow.profileJson as StoredCareerProfile;
-		const storedMatches = (tRow.matchesJson as StoredMatchRecord[]) ?? [];
+		let storedMatches: StoredMatchRecord[] = [];
+		for (const row of [...latestTrackerRows].reverse()) {
+			const rowMatches = (row.matchesJson as StoredMatchRecord[]) ?? [];
+			storedMatches = mergeStoredMatches(storedMatches, rowMatches);
+		}
 		const hydratedMatches = hydrateMatchesWithAssets(storedMatches, assets, {
 			puuid: activeAccount.puuid,
 			gameName: activeAccount.gameName,

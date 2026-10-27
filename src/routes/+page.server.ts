@@ -140,7 +140,11 @@ export const actions: Actions = {
 		const accountId = String(formData.get('accountId') ?? '');
 		if (!accountId) return fail(400, { syncError: 'Missing account ID.' });
 
-		const res = await syncValorantAccountData(locals.user.id, accountId);
+		const deepHistory = formData.get('deepHistory') === '1';
+		const res = await syncValorantAccountData(locals.user.id, accountId, {
+			bypassCooldown: deepHistory,
+			deepHistory
+		});
 		if (!res.ok) {
 			return fail(400, { syncError: res.error ?? 'Refresh failed.' });
 		}

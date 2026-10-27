@@ -159,4 +159,114 @@ describe('themed dropdowns, rarity summary & form controls', () => {
 		expect(body).toContain('https://media.valorant-api.com/competitivetiers/rank.png');
 		expect(body).toContain('Test Act');
 	});
+
+	it('paginates match history across acts when current act has a small sample', () => {
+		const mkMatch = (idx: number, seasonId: string) => ({
+			matchId: `m-${idx}`,
+			mapUrl: '/Game/Maps/Ascent/Ascent',
+			mapName: `Map ${idx}`,
+			mapIcon: null,
+			mapSplash: null,
+			queueId: 'competitive',
+			seasonId,
+			startedAt: new Date(1792857681602 - idx * 3600_000).toISOString(),
+			durationSeconds: 1800,
+			outcome: 'win' as const,
+			roundsWon: 13,
+			roundsLost: 7,
+			roundsPlayed: 20,
+			characterId: 'agent-clove',
+			agentName: 'Clove',
+			agentIcon: null,
+			competitiveTier: 12,
+			rankName: 'Gold 3',
+			rankIcon: null,
+			rrDelta: 20,
+			isMatchMvp: false,
+			isTeamMvp: false,
+			kills: 20,
+			deaths: 12,
+			assists: 6,
+			score: 4400,
+			damageDealt: 3200,
+			damageReceived: 2400,
+			headshots: 16,
+			bodyshots: 32,
+			legshots: 2,
+			kastRounds: 16,
+			firstBloods: 2,
+			flawlessRounds: 1,
+			aces: 0,
+			acs: 220,
+			adr: 160,
+			kd: 1.67,
+			hsPercent: 32,
+			kastPercent: 80,
+			ddDeltaPerRound: 40,
+			scoreboard: []
+		});
+
+		const { body } = render(TrackerSection, {
+			props: {
+				ownerPuuid: 'owner-1',
+				ownerAccount: { id: 'acc-1', gameName: 'NAON', tagLine: 'EUY' },
+				profile: null,
+				tracker: {
+					latestSeasonId: 'act-current',
+					latestSeasonLabel: 'V26: ACT VI',
+					hasFullActHistory: true,
+					matches: [
+						mkMatch(1, 'act-current'),
+						mkMatch(2, 'act-current'),
+						mkMatch(3, 'act-current'),
+						mkMatch(4, 'act-prev'),
+						mkMatch(5, 'act-prev'),
+						mkMatch(6, 'act-prev')
+					],
+					acts: [
+						{
+							seasonId: 'act-current',
+							label: 'V26: ACT VI',
+							tier: 12,
+							rankName: 'Gold 3',
+							rankIcon: null,
+							rankColorHex: '#94a3b8',
+							peakTier: 12,
+							peakRankName: 'Gold 3',
+							peakRankIcon: null,
+							rr: 31,
+							wins: 3,
+							losses: 0,
+							games: 3,
+							matchSampleCount: 3
+						},
+						{
+							seasonId: 'act-prev',
+							label: 'V26: ACT V',
+							tier: 11,
+							rankName: 'Silver 2',
+							rankIcon: null,
+							rankColorHex: '#94a3b8',
+							peakTier: 11,
+							peakRankName: 'Silver 2',
+							peakRankIcon: null,
+							rr: 0,
+							wins: 2,
+							losses: 5,
+							games: 7,
+							matchSampleCount: 3
+						}
+					]
+				}
+			}
+		});
+
+		expect(body).toContain('data-match-pagination');
+		expect(body).toContain('aria-label="Match history pagination"');
+		expect(body).toContain('aria-label="Next page"');
+		expect(body).toContain('Fetch Deep History');
+		expect(body).toContain('Map 1');
+		expect(body).toContain('Map 5');
+		expect(body).not.toContain('Map 6');
+	});
 });

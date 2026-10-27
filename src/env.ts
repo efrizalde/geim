@@ -17,5 +17,10 @@ export const variables = defineEnvVars({
 	ENCRYPTION_MASTER_KEY: {
 		description: '64-character hex master key (32 bytes) for AES-256-GCM Riot session encryption.',
 		schema: optionalNonEmpty
+	},
+	HENRIKDEV_API_KEY: {
+		description:
+			'Optional HenrikDev API key (HDEV-...) for rich VALORANT tracker & stored match history.',
+		schema: optionalNonEmpty
 	}
 });

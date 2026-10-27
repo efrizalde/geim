@@ -6,6 +6,7 @@
 		Clock,
 		Crosshair,
 		Flame,
+		Info,
 		Shield,
 		Sparkles,
 		Swords,
@@ -25,8 +26,10 @@
 	interface Props {
 		ownerPuuid: string;
 		ownerAccount?: {
+			id?: string;
 			gameName: string;
 			tagLine: string;
+			connectionStatus?: string;
 		} | null;
 		profile: HydratedProfileBanner | null;
 		tracker: {
@@ -40,13 +43,16 @@
 
 	let { ownerPuuid, ownerAccount = null, profile, tracker }: Props = $props();
 
-	const hasCompMatches = $derived(
-		(tracker?.matches ?? []).some((m) => m.queueId === 'competitive')
-	);
+	const allMatches = $derived(tracker?.matches ?? []);
+
+	const hasCompMatches = $derived(allMatches.some((m) => m.queueId === 'competitive'));
 
 	let userSelectedQueue = $state<QueueFilter | null>(null);
 	// 'all' = All Recent Sample, otherwise a specific seasonId
 	let userSelectedSeasonId = $state<string | null>(null);
+	let userHistoryScope = $state<'act' | 'all_acts' | 'all_queues' | null>(null);
+	let pageSize = $state<5 | 10 | 20>(5);
+	let currentPage = $state(1);
 	let actMenuOpen = $state(false);
 	let expandedMatchId = $state<string | null>(null);
 
@@ -64,6 +70,10 @@
 			: (tracker?.acts.find((a) => a.seasonId === selectedSeasonId) ?? null)
 	);
 
+	const actLabelBySeasonId = $derived<Record<string, string>>(
+		Object.fromEntries((tracker?.acts ?? []).map((a) => [a.seasonId.toLowerCase(), a.label]))
+	);
+
 	const queueTabs: Array<{ id: QueueFilter; label: string; shortLabel: string }> = [
 		{ id: 'competitive', label: 'Competitive', shortLabel: 'Competitive' },
 		{ id: 'unrated', label: 'Unrated', shortLabel: 'Unrated' },
@@ -78,16 +88,48 @@
 		return m.queueId === q;
 	}
 
-	const filteredMatches = $derived.by(() => {
-		const all = tracker?.matches ?? [];
-		return all.filter((m) => {
-			if (!matchesQueue(m, queueFilter)) return false;
-			if (selectedSeasonId !== 'all') {
-				return m.seasonId === selectedSeasonId;
+	const queueMatches = $derived.by(() => allMatches.filter((m) => matchesQueue(m, queueFilter)));
+
+	const queueMatchCountBySeason = $derived.by(() => {
+		const counts: Record<string, number> = {};
+		for (const m of queueMatches) {
+			if (m.seasonId) {
+				counts[m.seasonId] = (counts[m.seasonId] ?? 0) + 1;
 			}
-			return true;
-		});
+		}
+		return counts;
 	});
+
+	const filteredMatches = $derived.by(() => {
+		if (selectedSeasonId === 'all') return queueMatches;
+		return queueMatches.filter((m) => m.seasonId === selectedSeasonId);
+	});
+
+	// Default match feed scope: show all indexed acts when on the default season and older acts have additional matches
+	const effectiveHistoryScope = $derived<'act' | 'all_acts' | 'all_queues'>(
+		userHistoryScope ??
+			(selectedSeasonId === 'all'
+				? 'all_acts'
+				: userSelectedSeasonId === null &&
+					  filteredMatches.length < 5 &&
+					  queueMatches.length > filteredMatches.length
+					? 'all_acts'
+					: 'act')
+	);
+
+	const historyMatches = $derived.by(() => {
+		if (effectiveHistoryScope === 'all_queues') return allMatches;
+		if (effectiveHistoryScope === 'all_acts' || selectedSeasonId === 'all') return queueMatches;
+		return filteredMatches;
+	});
+
+	const totalPages = $derived(Math.max(1, Math.ceil(historyMatches.length / pageSize)));
+	const safePage = $derived(Math.min(Math.max(1, currentPage), totalPages));
+	const pageStartIndex = $derived((safePage - 1) * pageSize);
+	const paginatedMatches = $derived(
+		historyMatches.slice(pageStartIndex, pageStartIndex + pageSize)
+	);
+	const pageNumbers = $derived(Array.from({ length: totalPages }, (_, i) => i + 1));
 
 	// Displayed Rating dynamically reflects the selected Act when viewing a specific Act
 	const displayedRating = $derived.by(() => {
@@ -160,10 +202,9 @@
 
 		const hasSample = list.length > 0;
 		const useActMmrRecord =
-			!hasSample &&
 			queueFilter === 'competitive' &&
 			selectedActMeta !== null &&
-			selectedActMeta.games > 0;
+			selectedActMeta.games > list.length;
 
 		const displayWins = useActMmrRecord ? selectedActMeta!.wins : wins;
 		const displayLosses = useActMmrRecord ? selectedActMeta!.losses : losses;
@@ -302,6 +343,9 @@
 
 	function formatQueueBadge(q: string): string {
 		if (q === 'standard') return 'Unrated';
+		if (q === 'hurm') return 'TDM';
+		if (q === 'custom') return 'Custom';
+		if (q === 'spikerush') return 'Spike Rush';
 		return q.charAt(0).toUpperCase() + q.slice(1);
 	}
 
@@ -385,7 +429,10 @@
 					type="button"
 					role="tab"
 					aria-selected={queueFilter === tab.id}
-					onclick={() => (userSelectedQueue = tab.id)}
+					onclick={() => {
+						userSelectedQueue = tab.id;
+						currentPage = 1;
+					}}
 					data-active={queueFilter === tab.id}
 					class="seg-tab shrink-0 cursor-pointer rounded-lg px-3 py-1.5 text-xs font-bold tracking-wide whitespace-nowrap"
 				>
@@ -435,6 +482,8 @@
 						aria-selected={selectedSeasonId === 'all'}
 						onclick={() => {
 							userSelectedSeasonId = 'all';
+							userHistoryScope = 'all_acts';
+							currentPage = 1;
 							actMenuOpen = false;
 						}}
 						class="flex w-full cursor-pointer items-center justify-between rounded-xl px-3 py-2 text-left text-xs transition hover:bg-white/[0.06] {selectedSeasonId ===
@@ -445,7 +494,8 @@
 						<div>
 							<p class="font-bold">All Recent Matches</p>
 							<p class="font-mono text-[10px] text-slate-400">
-								Full indexed PD window ({tracker?.matches.length ?? 0} matches)
+								Full indexed PD window ({queueMatches.length}
+								{activeQueueLabel.toLowerCase()} / {allMatches.length} total)
 							</p>
 						</div>
 						{#if selectedSeasonId === 'all'}
@@ -463,12 +513,15 @@
 						<div class="neu-dropdown-scroll max-h-64 overflow-y-auto pr-0.5">
 							{#each tracker?.acts ?? [] as act (act.seasonId)}
 								{@const isSelected = selectedSeasonId === act.seasonId}
+								{@const actQueueMatchCount = queueMatchCountBySeason[act.seasonId] ?? 0}
 								<button
 									type="button"
 									role="option"
 									aria-selected={isSelected}
 									onclick={() => {
 										userSelectedSeasonId = act.seasonId;
+										userHistoryScope = 'act';
+										currentPage = 1;
 										actMenuOpen = false;
 									}}
 									class="flex w-full cursor-pointer items-center justify-between gap-2 rounded-xl px-3 py-2 text-left text-xs transition hover:bg-white/[0.06] {isSelected
@@ -490,16 +543,24 @@
 											<p class="truncate text-[10px] text-slate-400">
 												{act.rankName}
 												{#if act.games > 0}
-													· {act.wins}W-{act.losses}L
+													· {act.wins}W-{act.losses}L ({act.games}G)
 												{/if}
 											</p>
 										</div>
 									</div>
 
 									<div class="flex shrink-0 items-center gap-2">
-										{#if act.matchSampleCount > 0}
+										{#if actQueueMatchCount > 0}
 											<span
 												class="rounded bg-white/[0.07] px-1.5 py-0.5 font-mono text-[9px] text-neu-cyan tabular-nums"
+												title="{actQueueMatchCount} detailed matches in PD sample"
+											>
+												{actQueueMatchCount}M
+											</span>
+										{:else if act.matchSampleCount > 0}
+											<span
+												class="rounded bg-white/[0.05] px-1.5 py-0.5 font-mono text-[9px] text-slate-400 tabular-nums"
+												title="{act.matchSampleCount} matches in other queues"
 											>
 												{act.matchSampleCount}M
 											</span>
@@ -752,7 +813,9 @@
 						{activeSeasonHeading} · {activeQueueLabel}
 					</h2>
 					<span class="font-mono text-[11px] text-slate-400 tabular-nums sm:text-xs">
-						{#if overview.hasSample}
+						{#if overview.useActMmrRecord && overview.hasSample}
+							Official Act // {overview.displayGames} Games ({overview.sampleCount} Detailed)
+						{:else if overview.hasSample}
 							{overview.playtimeHours.toFixed(1)}h // {overview.sampleCount}
 							{overview.sampleCount === 1 ? 'Match' : 'Matches'}
 						{:else if overview.useActMmrRecord}
@@ -764,11 +827,13 @@
 				<span
 					class="rounded-full border border-white/12 bg-white/[0.05] px-2.5 py-0.5 font-mono text-[10px] text-slate-300 tabular-nums backdrop-blur-md"
 				>
-					{overview.hasSample
-						? `PD Sample (${overview.sampleCount})`
-						: overview.useActMmrRecord
-							? 'MMR Season Record'
-							: '0 Matches'}
+					{overview.useActMmrRecord && overview.hasSample
+						? `MMR Record + ${overview.sampleCount} PD`
+						: overview.hasSample
+							? `PD Sample (${overview.sampleCount})`
+							: overview.useActMmrRecord
+								? 'MMR Season Record'
+								: '0 Matches'}
 				</span>
 			</div>
 
@@ -1238,30 +1303,168 @@
 		</div>
 	</div>
 
-	<!-- ==================== REVAMPED MATCH HISTORY FEED WITH STAGGERED ANIMATIONS ==================== -->
-	{#if filteredMatches.length > 0}
-		<section class="mt-2 flex flex-col gap-3">
-			<div class="flex flex-wrap items-center justify-between gap-2 px-0.5">
-				<div class="flex items-center gap-2">
-					<h3
-						class="font-display text-xs font-bold tracking-widest text-white uppercase sm:text-sm"
+	<!-- ==================== REVAMPED MATCH HISTORY FEED WITH SCOPE & PAGINATION ==================== -->
+	<section class="mt-2 flex flex-col gap-3" data-match-history>
+		<div
+			class="flex flex-col gap-2.5 px-0.5 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between"
+		>
+			<div class="flex flex-wrap items-center gap-2">
+				<h3 class="font-display text-xs font-bold tracking-widest text-white uppercase sm:text-sm">
+					Match History
+				</h3>
+				<span
+					class="rounded-full border border-white/10 bg-white/[0.05] px-2 py-0.5 font-mono text-[10px] font-bold text-slate-300 tabular-nums"
+				>
+					{historyMatches.length}
+				</span>
+
+				{#if allMatches.length > 0}
+					<div
+						role="group"
+						aria-label="Match history scope"
+						class="neu-well-sm flex items-center gap-1 rounded-xl p-0.5"
 					>
-						Match History
-					</h3>
-					<span
-						class="rounded-full border border-white/10 bg-white/[0.05] px-2 py-0.5 font-mono text-[10px] font-bold text-slate-300 tabular-nums"
-					>
-						{filteredMatches.length}
-					</span>
-				</div>
+						{#if selectedSeasonId !== 'all'}
+							<button
+								type="button"
+								onclick={() => {
+									userHistoryScope = 'act';
+									currentPage = 1;
+								}}
+								data-active={effectiveHistoryScope === 'act'}
+								class="seg-tab cursor-pointer rounded-lg px-2.5 py-1 font-mono text-[10px] font-bold whitespace-nowrap"
+							>
+								{activeSeasonHeading} ({filteredMatches.length})
+							</button>
+						{/if}
+						<button
+							type="button"
+							onclick={() => {
+								userHistoryScope = 'all_acts';
+								currentPage = 1;
+							}}
+							data-active={effectiveHistoryScope === 'all_acts'}
+							class="seg-tab cursor-pointer rounded-lg px-2.5 py-1 font-mono text-[10px] font-bold whitespace-nowrap"
+						>
+							All Acts · {queueTabs.find((t) => t.id === queueFilter)?.shortLabel ?? 'Queue'} ({queueMatches.length})
+						</button>
+						{#if queueFilter !== 'all' && allMatches.length > queueMatches.length}
+							<button
+								type="button"
+								onclick={() => {
+									userHistoryScope = 'all_queues';
+									currentPage = 1;
+								}}
+								data-active={effectiveHistoryScope === 'all_queues'}
+								class="seg-tab cursor-pointer rounded-lg px-2.5 py-1 font-mono text-[10px] font-bold whitespace-nowrap"
+							>
+								All Queues ({allMatches.length})
+							</button>
+						{/if}
+					</div>
+				{/if}
+			</div>
+
+			<div class="flex flex-wrap items-center justify-between gap-2 sm:justify-end">
 				<span class="font-mono text-[10px] text-slate-400 sm:text-[11px]">
 					Tap any match for 5v5 scoreboard
 				</span>
-			</div>
 
-			{#key `${queueFilter}-${selectedSeasonId}`}
+				{#if ownerAccount?.id}
+					<form method="POST" action="?/refreshAccount" class="inline-flex">
+						<input type="hidden" name="accountId" value={ownerAccount.id} />
+						<input type="hidden" name="deepHistory" value="1" />
+						<button
+							type="submit"
+							class="neu-btn cursor-pointer rounded-lg px-2.5 py-1 font-mono text-[10px] font-bold text-neu-cyan transition hover:text-white"
+							title="Scan deeper Riot PD match-history & competitive-updates pages"
+						>
+							Fetch Deep History
+						</button>
+					</form>
+				{/if}
+			</div>
+		</div>
+
+		{#if selectedSeasonId !== 'all' && selectedActMeta && selectedActMeta.games > filteredMatches.length}
+			<div
+				class="glass-neu flex flex-col gap-2.5 rounded-xl border border-white/10 px-3.5 py-3 text-xs text-slate-300 sm:flex-row sm:items-center sm:justify-between"
+			>
+				<div class="flex items-start gap-2.5">
+					<Info class="mt-0.5 h-4 w-4 shrink-0 text-neu-cyan" />
+					<p class="leading-relaxed">
+						{#if filteredMatches.length === 0}
+							Riot's PD API only retains full match details &amp; scoreboards for recent matches.
+							<strong class="font-mono text-white">{activeSeasonHeading}</strong>'s official record
+							(<strong class="font-mono text-white"
+								>{selectedActMeta.wins}W-{selectedActMeta.losses}L · {selectedActMeta.games} Games</strong
+							>) comes from Riot's career MMR summary above.
+						{:else}
+							<strong class="font-mono text-white"
+								>{filteredMatches.length} of {selectedActMeta.games}</strong
+							>
+							competitive games from
+							<strong class="font-mono text-white">{activeSeasonHeading}</strong> are inside Riot's
+							recent PD match-details retention window ({selectedActMeta.wins}W-{selectedActMeta.losses}L
+							full Act record above).
+						{/if}
+					</p>
+				</div>
+
+				{#if effectiveHistoryScope === 'act' && queueMatches.length > filteredMatches.length}
+					<button
+						type="button"
+						onclick={() => {
+							userHistoryScope = 'all_acts';
+							currentPage = 1;
+						}}
+						class="neu-btn shrink-0 cursor-pointer rounded-lg px-3 py-1.5 font-mono text-[10px] font-bold text-white"
+					>
+						Show All Indexed Acts ({queueMatches.length})
+					</button>
+				{/if}
+			</div>
+		{/if}
+
+		{#if historyMatches.length === 0}
+			<div
+				class="glass-neu flex flex-col items-center justify-center gap-3 rounded-2xl p-6 text-center"
+			>
+				<p class="text-xs text-slate-400">
+					No indexed {activeQueueLabel.toLowerCase()} match details found for
+					<span class="font-mono text-white">{activeSeasonHeading}</span>.
+				</p>
+				{#if allMatches.length > 0}
+					<div class="flex flex-wrap items-center justify-center gap-2">
+						{#if queueMatches.length > 0}
+							<button
+								type="button"
+								onclick={() => {
+									userHistoryScope = 'all_acts';
+									currentPage = 1;
+								}}
+								class="neu-btn cursor-pointer rounded-xl px-3.5 py-1.5 text-xs font-semibold text-white"
+							>
+								View All {queueTabs.find((t) => t.id === queueFilter)?.shortLabel} Matches ({queueMatches.length})
+							</button>
+						{/if}
+						<button
+							type="button"
+							onclick={() => {
+								userHistoryScope = 'all_queues';
+								currentPage = 1;
+							}}
+							class="neu-btn cursor-pointer rounded-xl px-3.5 py-1.5 text-xs font-semibold text-slate-200"
+						>
+							View All Indexed Matches ({allMatches.length})
+						</button>
+					</div>
+				{/if}
+			</div>
+		{:else}
+			{#key `${queueFilter}-${selectedSeasonId}-${effectiveHistoryScope}-${safePage}-${pageSize}`}
 				<div class="flex flex-col gap-3">
-					{#each filteredMatches as match, idx (match.matchId)}
+					{#each paginatedMatches as match, idx (match.matchId)}
 						{@const isExpanded = expandedMatchId === match.matchId}
 						{@const isDeathmatch = match.queueId === 'deathmatch'}
 						{@const outcomeGlowRgba =
@@ -1360,6 +1563,13 @@
 												>
 													{formatQueueBadge(match.queueId)}
 												</span>
+												{#if actLabelBySeasonId[match.seasonId]}
+													<span
+														class="rounded-md border border-white/8 bg-white/[0.04] px-1.5 py-0.5 font-mono text-[9px] font-medium text-slate-400"
+													>
+														{actLabelBySeasonId[match.seasonId]}
+													</span>
+												{/if}
 											</div>
 											<p
 												class="mt-0.5 flex flex-wrap items-center gap-1.5 font-mono text-[10px] text-slate-400 tabular-nums"
@@ -1716,6 +1926,83 @@
 					{/each}
 				</div>
 			{/key}
-		</section>
-	{/if}
+
+			<!-- ==================== MATCH HISTORY PAGINATION BAR ==================== -->
+			<nav
+				aria-label="Match history pagination"
+				data-match-pagination
+				class="glass-neu flex flex-col gap-2.5 rounded-2xl px-3.5 py-2.5 sm:flex-row sm:items-center sm:justify-between sm:px-4"
+			>
+				<div class="flex flex-wrap items-center justify-between gap-2 sm:justify-start">
+					<span class="font-mono text-[11px] text-slate-300 tabular-nums">
+						Showing <strong class="text-white">{pageStartIndex + 1}</strong>–<strong
+							class="text-white"
+							>{Math.min(pageStartIndex + paginatedMatches.length, historyMatches.length)}</strong
+						>
+						of <strong class="text-white">{historyMatches.length}</strong> matches
+					</span>
+
+					<div
+						role="group"
+						aria-label="Matches per page"
+						class="neu-well-sm flex items-center gap-0.5 rounded-lg p-0.5"
+					>
+						{#each [5, 10, 20] as const as size (size)}
+							<button
+								type="button"
+								onclick={() => {
+									pageSize = size;
+									currentPage = 1;
+								}}
+								data-active={pageSize === size}
+								class="seg-tab cursor-pointer rounded-md px-2 py-0.5 font-mono text-[10px] font-bold tabular-nums"
+							>
+								{size}/pg
+							</button>
+						{/each}
+					</div>
+				</div>
+
+				{#if totalPages > 1}
+					<div class="flex items-center justify-center gap-1 sm:justify-end">
+						<button
+							type="button"
+							disabled={safePage <= 1}
+							onclick={() => (currentPage = Math.max(1, safePage - 1))}
+							aria-label="Previous page"
+							class="neu-btn inline-flex h-8 cursor-pointer items-center gap-1 rounded-lg px-2.5 font-mono text-[11px] font-bold text-slate-200 disabled:cursor-not-allowed disabled:opacity-40"
+						>
+							<ChevronDown class="h-3.5 w-3.5 rotate-90" />
+							<span>Prev</span>
+						</button>
+
+						{#each pageNumbers as p (p)}
+							<button
+								type="button"
+								onclick={() => (currentPage = p)}
+								aria-current={safePage === p ? 'page' : undefined}
+								class="h-8 min-w-8 cursor-pointer rounded-lg px-2 font-mono text-[11px] font-bold tabular-nums transition {safePage ===
+								p
+									? 'neu-btn-accent text-white'
+									: 'neu-btn text-slate-300 hover:text-white'}"
+							>
+								{p}
+							</button>
+						{/each}
+
+						<button
+							type="button"
+							disabled={safePage >= totalPages}
+							onclick={() => (currentPage = Math.min(totalPages, safePage + 1))}
+							aria-label="Next page"
+							class="neu-btn inline-flex h-8 cursor-pointer items-center gap-1 rounded-lg px-2.5 font-mono text-[11px] font-bold text-slate-200 disabled:cursor-not-allowed disabled:opacity-40"
+						>
+							<span>Next</span>
+							<ChevronDown class="h-3.5 w-3.5 -rotate-90" />
+						</button>
+					</div>
+				{/if}
+			</nav>
+		{/if}
+	</section>
 </div>

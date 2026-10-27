@@ -324,3 +324,21 @@ export const MatchHistoryResponseSchema = z.object({
 		})
 	)
 });
+
+export const CompetitiveUpdatesResponseSchema = z.object({
+	Version: z.number().optional(),
+	Subject: z.string(),
+	Matches: z.array(
+		z.object({
+			MatchID: z.string(),
+			MapID: z.string().optional(),
+			SeasonID: z.string().optional(),
+			MatchStartTime: z.number().optional(),
+			TierAfterUpdate: z.number().optional(),
+			TierBeforeUpdate: z.number().optional(),
+			RankedRatingAfterUpdate: z.number().optional(),
+			RankedRatingBeforeUpdate: z.number().optional(),
+			RankedRatingEarned: z.number().optional()
+		})
+	)
+});
