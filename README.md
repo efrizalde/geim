@@ -105,6 +105,12 @@ bun run spike:valorant
 | `bun run db:studio`                  | Drizzle Studio DB browser                        |
 | `bun run spike:valorant`             | Interactive Riot auth verification harness       |
 
+For an existing database created before migrations were tracked, run
+`bun run scripts/baseline-migrations.ts` to verify it against the first two migration
+snapshots. Only if it matches, run the same command with `--apply` to record those
+migrations, then use `bun run db:migrate` normally. Do not use the baseline command
+for a fresh database or one with an existing migration journal.
+
 ## Project structure
 
 ```text
