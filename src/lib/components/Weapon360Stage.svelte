@@ -26,6 +26,8 @@
 	let stageEl = $state<HTMLDivElement | null>(null);
 	let isDragging = $state(false);
 	let autoSpin = $state(true);
+	let reducedMotion = $state(false);
+	let requestRender = () => {};
 	let loadingTexture = $state(false);
 	let webglFallback = $state(false);
 
@@ -58,6 +60,18 @@
 
 	let idleTimer: ReturnType<typeof setTimeout> | null = null;
 
+	$effect(() => {
+		const media = window.matchMedia('(prefers-reduced-motion: reduce)');
+		const update = () => {
+			reducedMotion = media.matches;
+			if (media.matches) autoSpin = false;
+			requestRender();
+		};
+		update();
+		media.addEventListener('change', update);
+		return () => media.removeEventListener('change', update);
+	});
+
 	function clearIdleTimer() {
 		if (idleTimer !== null) {
 			clearTimeout(idleTimer);
@@ -66,6 +80,7 @@
 	}
 
 	function syncFallbackTelemetry() {
+		requestRender();
 		if (!webglFallback) return;
 		const rawDeg = Math.round((control.targetYaw * 180) / Math.PI) % 360;
 		displayYawDeg = (rawDeg + 360) % 360;
@@ -104,6 +119,7 @@
 
 	function scheduleIdleReset() {
 		clearIdleTimer();
+		if (reducedMotion) return;
 		idleTimer = setTimeout(() => {
 			idleTimer = null;
 			if (!control.dragging) {
@@ -294,15 +310,42 @@
 			camera.aspect = w / h;
 			camera.updateProjectionMatrix();
 			renderer.setSize(w, h);
+			requestRender();
 		});
 		ro.observe(container);
 
 		let rafId = 0;
 		let lastTime = performance.now();
 		let hudTick = 0;
+		let visible = true;
+		const scheduleFrame = () => {
+			if (!rafId && visible && !document.hidden) rafId = requestAnimationFrame(tick);
+		};
+		requestRender = scheduleFrame;
+		const visibility = new IntersectionObserver(([entry]) => {
+			visible = entry.isIntersecting;
+			if (visible) {
+				lastTime = performance.now();
+				scheduleFrame();
+			} else {
+				cancelAnimationFrame(rafId);
+				rafId = 0;
+			}
+		});
+		visibility.observe(container);
+		const onVisibilityChange = () => {
+			if (document.hidden) {
+				cancelAnimationFrame(rafId);
+				rafId = 0;
+			} else {
+				lastTime = performance.now();
+				scheduleFrame();
+			}
+		};
+		document.addEventListener('visibilitychange', onVisibilityChange);
 
 		const tick = (now: number) => {
-			rafId = requestAnimationFrame(tick);
+			rafId = 0;
 			const dt = Math.min(0.05, (now - lastTime) / 1000);
 			lastTime = now;
 			const elapsed = now * 0.001;
@@ -329,17 +372,19 @@
 			weaponPivot.rotation.x = control.currentPitch;
 
 			// Gentle showroom levitation
-			weaponHolder.position.y = Math.sin(elapsed * 1.8) * 0.055;
+			if (autoSpin) weaponHolder.position.y = Math.sin(elapsed * 1.8) * 0.055;
 
 			// Camera zoom distance
 			camera.position.z = 6.2 / control.currentZoom;
 			camera.lookAt(0, 0.05, 0);
 
 			// Orbiting rim highlight + pedestal & starfield drift
-			rimLight.position.x = Math.cos(elapsed * 0.9) * 3.2;
-			rimLight.position.z = Math.sin(elapsed * 0.9) * 2.8 + 1.4;
-			pedestalGroup.rotation.y = -control.currentYaw * 0.5 + elapsed * 0.18;
-			sparksPoints.rotation.y = elapsed * 0.08;
+			if (autoSpin) {
+				rimLight.position.x = Math.cos(elapsed * 0.9) * 3.2;
+				rimLight.position.z = Math.sin(elapsed * 0.9) * 2.8 + 1.4;
+				pedestalGroup.rotation.y = -control.currentYaw * 0.5 + elapsed * 0.18;
+				sparksPoints.rotation.y = elapsed * 0.08;
+			}
 
 			renderer.render(scene, camera);
 
@@ -350,15 +395,30 @@
 				displayPitchDeg = Math.round((control.currentPitch * 180) / Math.PI);
 				displayZoom = Number(control.currentZoom.toFixed(2));
 			}
+			if (
+				autoSpin ||
+				control.dragging ||
+				control.returningToDefault ||
+				gsap.isTweening(control) ||
+				Math.abs(control.velYaw) > 0.0002 ||
+				Math.abs(control.velPitch) > 0.0002 ||
+				Math.abs(control.targetYaw - control.currentYaw) > 0.0005 ||
+				Math.abs(control.targetPitch - control.currentPitch) > 0.0005 ||
+				Math.abs(control.targetZoom - control.currentZoom) > 0.0005
+			)
+				scheduleFrame();
 		};
 
-		rafId = requestAnimationFrame(tick);
+		scheduleFrame();
 
 		return () => {
 			clearIdleTimer();
 			gsap.killTweensOf(control);
 			cancelAnimationFrame(rafId);
 			ro.disconnect();
+			visibility.disconnect();
+			document.removeEventListener('visibilitychange', onVisibilityChange);
+			requestRender = () => {};
 			threeHandles = null;
 			sparkSprite.dispose();
 			disposeObjectTree(scene);
@@ -377,6 +437,7 @@
 		h.outerRingMat.color.set(spec.primaryHex);
 		h.innerRingMat.color.set(spec.secondaryHex);
 		h.sparksMat.color.set(spec.primaryHex);
+		requestRender();
 	});
 
 	// 3. Reactively Load & Extrude High-Res Weapon Texture into Volumetric 3D Silhouette
@@ -392,6 +453,7 @@
 				disposeObjectTree(child);
 				h.weaponHolder.remove(child);
 			}
+			requestRender();
 			return;
 		}
 
@@ -498,13 +560,15 @@
 				}
 
 				h.weaponHolder.add(modelGroup);
+				requestRender();
 
 				// Crisp GSAP showcase pop + subtle spin flourish on skin/variant swap
-				gsap.fromTo(
-					modelGroup.scale,
-					{ x: 0.86, y: 0.86, z: 0.86 },
-					{ x: 1, y: 1, z: 1, duration: 0.45, ease: 'back.out(1.6)' }
-				);
+				if (!reducedMotion)
+					gsap.fromTo(
+						modelGroup.scale,
+						{ x: 0.86, y: 0.86, z: 0.86 },
+						{ x: 1, y: 1, z: 1, duration: 0.45, ease: 'back.out(1.6)', onUpdate: requestRender }
+					);
 			},
 			undefined,
 			() => {
@@ -533,6 +597,7 @@
 		control.velPitch = 0;
 		control.lastX = e.clientX;
 		control.lastY = e.clientY;
+		requestRender();
 		(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
 	}
 
@@ -558,6 +623,7 @@
 		if (!control.dragging) return;
 		control.dragging = false;
 		isDragging = false;
+		requestRender();
 		try {
 			(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
 		} catch {
@@ -623,6 +689,7 @@
 
 	function toggleAutoSpin() {
 		autoSpin = !autoSpin;
+		requestRender();
 		if (!autoSpin) {
 			// When turning Auto-Spin OFF while off-center, return to default pose after 3s of no activity
 			control.idlePaused = true;

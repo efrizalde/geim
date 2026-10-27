@@ -199,7 +199,7 @@
 															chromaUuid: chroma.uuid
 														})}
 													title={chroma.name}
-													class="h-4.5 w-4.5 cursor-pointer overflow-hidden rounded-md border transition {activeRender ===
+													class="h-7 w-7 cursor-pointer overflow-hidden rounded-md border transition focus-visible:ring-2 focus-visible:ring-neu-cyan {activeRender ===
 													chroma.render
 														? 'scale-110 border-white shadow-[0_0_8px_rgba(255,255,255,0.45)]'
 														: 'border-white/20 opacity-75 hover:opacity-100'}"

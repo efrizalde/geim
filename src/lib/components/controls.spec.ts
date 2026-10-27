@@ -27,6 +27,26 @@ vi.mock('./RarityCardShell.svelte', () => ({ default: vi.fn() }));
 vi.mock('./RarityWeaponChamber.svelte', () => ({ default: vi.fn() }));
 
 describe('themed dropdowns, rarity summary & form controls', () => {
+	it('offers older matches when the selected filter has no loaded results', () => {
+		const { body } = render(TrackerSection, {
+			props: {
+				ownerPuuid: 'owner',
+				ownerAccount: { id: 'account', gameName: 'Player', tagLine: 'TAG' },
+				profile: null,
+				tracker: {
+					latestSeasonId: 'old-act',
+					latestSeasonLabel: 'Old act',
+					hasFullActHistory: false,
+					acts: [],
+					matches: [],
+					totalMatches: 45,
+					queueTotals: { all: 45, competitive: 5 },
+					seasonCounts: { competitive: { 'old-act': 5 } }
+				}
+			}
+		});
+		expect(body).toContain('Load older matches');
+	});
 	it('renders unified Owned Skins priced/unpriced section, rarity tier logos + counts, and sort controls', () => {
 		const { body } = render(InventorySection, {
 			props: {
@@ -203,7 +223,8 @@ describe('themed dropdowns, rarity summary & form controls', () => {
 			hsPercent: 32,
 			kastPercent: 80,
 			ddDeltaPerRound: 40,
-			scoreboard: []
+			scoreboard: [],
+			hasScoreboard: false
 		});
 
 		const { body } = render(TrackerSection, {

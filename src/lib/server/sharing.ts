@@ -3,53 +3,13 @@ import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { getDb, schema } from './db';
 import { loadDashboardView } from './providers/valorant/service';
-import type { HydratedMatchItem } from './providers/valorant/tracker';
+import { summarizeMatchStats, type HydratedMatchItem } from './providers/valorant/tracker';
 import type { SupportedCurrency } from './valuation/money';
 
 type Dashboard = Awaited<ReturnType<typeof loadDashboardView>>;
 
 export function summarizeSharedStats(matches: HydratedMatchItem[]) {
-	const sum = matches.reduce(
-		(total, match) => ({
-			kills: total.kills + match.kills,
-			deaths: total.deaths + match.deaths,
-			assists: total.assists + match.assists,
-			rounds: total.rounds + Math.max(1, match.roundsPlayed),
-			score: total.score + match.score,
-			damage: total.damage + match.damageDealt,
-			headshots: total.headshots + match.headshots,
-			hits: total.hits + match.headshots + match.bodyshots + match.legshots,
-			kastRounds: total.kastRounds + match.kastRounds
-		}),
-		{
-			kills: 0,
-			deaths: 0,
-			assists: 0,
-			rounds: 0,
-			score: 0,
-			damage: 0,
-			headshots: 0,
-			hits: 0,
-			kastRounds: 0
-		}
-	);
-	const wins = matches.filter((match) => match.outcome === 'win').length;
-	const losses = matches.filter((match) => match.outcome === 'loss').length;
-	return {
-		sampleCount: matches.length,
-		wins,
-		losses,
-		draws: matches.length - wins - losses,
-		kills: sum.kills,
-		deaths: sum.deaths,
-		assists: sum.assists,
-		killDeathRatio: sum.kills / Math.max(1, sum.deaths),
-		winPercent: (100 * wins) / Math.max(1, wins + losses),
-		averageCombatScore: sum.score / Math.max(1, sum.rounds),
-		averageDamagePerRound: sum.damage / Math.max(1, sum.rounds),
-		headshotPercent: (100 * sum.headshots) / Math.max(1, sum.hits),
-		kastPercent: (100 * sum.kastRounds) / Math.max(1, sum.rounds)
-	};
+	return summarizeMatchStats(matches);
 }
 
 export type SharedStats = ReturnType<typeof summarizeSharedStats>;
@@ -80,7 +40,7 @@ export function createSharedProfileSnapshot(dashboard: Dashboard): SharedProfile
 		},
 		profile: dashboard.profile,
 		inventory: dashboard.inventory,
-		stats: summarizeSharedStats(dashboard.tracker?.matches ?? []),
+		stats: dashboard.tracker?.stats ?? summarizeSharedStats([]),
 		vpIconUrl: dashboard.currencyIcons.vp
 	};
 }
@@ -114,7 +74,8 @@ export async function publishSharedProfile(
 		.limit(1);
 	if (!ownedAccount) return null;
 
-	const dashboard = await loadDashboardView(userId, currency, accountId);
+	// Full skin detail stays embedded so the published snapshot stays self-contained.
+	const dashboard = await loadDashboardView(userId, currency, accountId, { fullSkinDetail: true });
 	if (dashboard.activeAccount?.id !== accountId) return null;
 	const snapshot = createSharedProfileSnapshot(dashboard);
 	if (!snapshot) return null;

@@ -44,8 +44,7 @@ export const GET: RequestHandler = async ({ url }) => {
 		error(415, 'Unsupported media type');
 	}
 
-	const bytes = await upstream.arrayBuffer();
-	return new Response(bytes, {
+	return new Response(upstream.body, {
 		status: 200,
 		headers: {
 			'Content-Type': contentType,

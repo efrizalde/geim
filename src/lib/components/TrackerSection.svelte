@@ -19,7 +19,10 @@
 		HydratedActOption,
 		HydratedProfileBanner
 	} from '#lib/server/providers/valorant/service.js';
-	import type { HydratedMatchItem } from '#lib/server/providers/valorant/tracker.js';
+	import type {
+		HydratedMatchItem,
+		TrackerScopeStats
+	} from '#lib/server/providers/valorant/tracker.js';
 
 	type QueueFilter = 'competitive' | 'unrated' | 'deathmatch' | 'swiftplay' | 'all';
 
@@ -38,14 +41,79 @@
 			hasFullActHistory: boolean;
 			acts: HydratedActOption[];
 			matches: HydratedMatchItem[];
+			totalMatches?: number;
+			queueTotals?: Record<string, number>;
+			seasonCounts?: Record<string, Record<string, number>>;
+			scopeStats?: Record<string, Record<string, TrackerScopeStats>>;
 		} | null;
 	}
 
 	let { ownerPuuid, ownerAccount = null, profile, tracker }: Props = $props();
 
-	const allMatches = $derived(tracker?.matches ?? []);
+	// Older matches beyond the bounded first page are fetched on demand and appended here.
+	let extraMatches = $state<HydratedMatchItem[]>([]);
+	let loadingOlder = $state(false);
+	let scoreboards = $state<Record<string, HydratedMatchItem['scoreboard']>>({});
+	let scoreboardLoading = $state<string | null>(null);
 
-	const hasCompMatches = $derived(allMatches.some((m) => m.queueId === 'competitive'));
+	// Expanded scoreboards hydrate on demand and are grafted onto their match rows here.
+	const allMatches = $derived(
+		[...(tracker?.matches ?? []), ...extraMatches].map((m) =>
+			scoreboards[m.matchId] ? { ...m, scoreboard: scoreboards[m.matchId] } : m
+		)
+	);
+	const storedTotal = $derived(tracker?.totalMatches ?? allMatches.length);
+	const queueTotals = $derived(tracker?.queueTotals ?? {});
+	const seasonCounts = $derived(tracker?.seasonCounts ?? {});
+
+	const queueBucket = (q: QueueFilter) => (q === 'all' ? 'all' : q === 'unrated' ? 'unrated' : q);
+
+	async function loadOlderMatches() {
+		if (!ownerAccount?.id || loadingOlder || allMatches.length >= storedTotal) return;
+		loadingOlder = true;
+		try {
+			const res = await fetch(
+				`/api/valorant/matches?account=${encodeURIComponent(ownerAccount.id)}&offset=${allMatches.length}&limit=40`
+			);
+			if (res.ok) {
+				const data = (await res.json()) as { matches: HydratedMatchItem[]; total: number };
+				const seen = new Set(allMatches.map((m) => m.matchId.toLowerCase()));
+				extraMatches = [
+					...extraMatches,
+					...data.matches.filter((m) => !seen.has(m.matchId.toLowerCase()))
+				];
+			}
+		} finally {
+			loadingOlder = false;
+		}
+	}
+
+	async function toggleMatch(match: HydratedMatchItem) {
+		const matchId = match.matchId;
+		if (expandedMatchId === matchId) {
+			expandedMatchId = null;
+			return;
+		}
+		expandedMatchId = matchId;
+		if (!match.hasScoreboard || scoreboards[matchId] || match.scoreboard.length > 0) return;
+		if (!ownerAccount?.id || scoreboardLoading === matchId) return;
+		scoreboardLoading = matchId;
+		try {
+			const res = await fetch(
+				`/api/valorant/matches?account=${encodeURIComponent(ownerAccount.id)}&match=${encodeURIComponent(matchId)}`
+			);
+			if (res.ok) {
+				const data = (await res.json()) as { scoreboard: HydratedMatchItem['scoreboard'] };
+				scoreboards[matchId] = data.scoreboard;
+			}
+		} finally {
+			scoreboardLoading = null;
+		}
+	}
+
+	const hasCompMatches = $derived(
+		(queueTotals.competitive ?? 0) > 0 || allMatches.some((m) => m.queueId === 'competitive')
+	);
 
 	let userSelectedQueue = $state<QueueFilter | null>(null);
 	// 'all' = All Recent Sample, otherwise a specific seasonId
@@ -90,16 +158,6 @@
 
 	const queueMatches = $derived.by(() => allMatches.filter((m) => matchesQueue(m, queueFilter)));
 
-	const queueMatchCountBySeason = $derived.by(() => {
-		const counts: Record<string, number> = {};
-		for (const m of queueMatches) {
-			if (m.seasonId) {
-				counts[m.seasonId] = (counts[m.seasonId] ?? 0) + 1;
-			}
-		}
-		return counts;
-	});
-
 	const filteredMatches = $derived.by(() => {
 		if (selectedSeasonId === 'all') return queueMatches;
 		return queueMatches.filter((m) => m.seasonId === selectedSeasonId);
@@ -130,6 +188,24 @@
 		historyMatches.slice(pageStartIndex, pageStartIndex + pageSize)
 	);
 	const pageNumbers = $derived(Array.from({ length: totalPages }, (_, i) => i + 1));
+
+	// Server-derived totals over the full stored set; loaded rows only cover the newest page.
+	const queueTotal = $derived(queueTotals[queueBucket(queueFilter)] ?? queueMatches.length);
+	const allTotal = $derived(queueTotals.all ?? allMatches.length);
+	const filteredTotal = $derived(
+		selectedSeasonId === 'all'
+			? queueTotal
+			: (seasonCounts[queueBucket(queueFilter)]?.[selectedSeasonId] ?? filteredMatches.length)
+	);
+	const actQueueMatchCountFor = (seasonId: string) =>
+		seasonCounts[queueBucket(queueFilter)]?.[seasonId] ?? 0;
+	const historyTotal = $derived(
+		effectiveHistoryScope === 'all_queues'
+			? allTotal
+			: effectiveHistoryScope === 'all_acts' || selectedSeasonId === 'all'
+				? queueTotal
+				: filteredTotal
+	);
 
 	// Displayed Rating dynamically reflects the selected Act when viewing a specific Act
 	const displayedRating = $derived.by(() => {
@@ -200,15 +276,39 @@
 			durationSeconds += m.durationSeconds;
 		}
 
-		const hasSample = list.length > 0;
+		const fullStats = tracker?.scopeStats?.[queueBucket(queueFilter)]?.[selectedSeasonId];
+		if (fullStats) {
+			({
+				wins,
+				losses,
+				draws,
+				kills,
+				deaths,
+				assists,
+				score,
+				rounds,
+				damageDealt,
+				damageReceived,
+				headshots,
+				bodyshots,
+				legshots,
+				kastRounds,
+				firstBloods,
+				flawlessRounds,
+				aces,
+				durationSeconds
+			} = fullStats);
+		}
+		const sampleCount = fullStats?.count ?? list.length;
+		const hasSample = sampleCount > 0;
 		const useActMmrRecord =
 			queueFilter === 'competitive' &&
 			selectedActMeta !== null &&
-			selectedActMeta.games > list.length;
+			selectedActMeta.games > sampleCount;
 
 		const displayWins = useActMmrRecord ? selectedActMeta!.wins : wins;
 		const displayLosses = useActMmrRecord ? selectedActMeta!.losses : losses;
-		const displayGames = useActMmrRecord ? selectedActMeta!.games : list.length;
+		const displayGames = useActMmrRecord ? selectedActMeta!.games : sampleCount;
 
 		const safeRounds = Math.max(1, rounds);
 		const safeDeaths = Math.max(1, deaths);
@@ -229,7 +329,7 @@
 		return {
 			hasSample,
 			useActMmrRecord,
-			sampleCount: list.length,
+			sampleCount,
 			displayGames,
 			wins: displayWins,
 			losses: displayLosses,
@@ -494,8 +594,8 @@
 						<div>
 							<p class="font-bold">All Recent Matches</p>
 							<p class="font-mono text-[10px] text-slate-400">
-								Full indexed PD window ({queueMatches.length}
-								{activeQueueLabel.toLowerCase()} / {allMatches.length} total)
+								Full indexed PD window ({queueTotal}
+								{activeQueueLabel.toLowerCase()} / {allTotal} total)
 							</p>
 						</div>
 						{#if selectedSeasonId === 'all'}
@@ -513,7 +613,7 @@
 						<div class="neu-dropdown-scroll max-h-64 overflow-y-auto pr-0.5">
 							{#each tracker?.acts ?? [] as act (act.seasonId)}
 								{@const isSelected = selectedSeasonId === act.seasonId}
-								{@const actQueueMatchCount = queueMatchCountBySeason[act.seasonId] ?? 0}
+								{@const actQueueMatchCount = actQueueMatchCountFor(act.seasonId) ?? 0}
 								<button
 									type="button"
 									role="option"
@@ -783,11 +883,13 @@
 				></div>
 
 				{#if profile?.heroAgentPortraitUrl}
-					<img
-						src={profile.heroAgentPortraitUrl}
-						alt=""
-						class="absolute -top-6 -right-4 hidden h-64 w-64 object-contain opacity-18 drop-shadow-[0_12px_28px_rgba(0,0,0,0.85)] xl:block"
-					/>
+					<picture>
+						<source media="(min-width: 1280px)" srcset={profile.heroAgentPortraitUrl} />
+						<img
+							alt=""
+							class="absolute -top-6 -right-4 hidden h-64 w-64 object-contain opacity-18 drop-shadow-[0_12px_28px_rgba(0,0,0,0.85)] xl:block"
+						/>
+					</picture>
 				{/if}
 
 				<!-- Oversized Gradient Rank Watermark Typography -->
@@ -1315,14 +1417,14 @@
 				<span
 					class="rounded-full border border-white/10 bg-white/[0.05] px-2 py-0.5 font-mono text-[10px] font-bold text-slate-300 tabular-nums"
 				>
-					{historyMatches.length}
+					{historyTotal}
 				</span>
 
-				{#if allMatches.length > 0}
+				{#if allTotal > 0}
 					<div
 						role="group"
 						aria-label="Match history scope"
-						class="neu-well-sm flex items-center gap-1 rounded-xl p-0.5"
+						class="neu-well-sm flex max-w-full flex-wrap items-center gap-1 rounded-xl p-0.5"
 					>
 						{#if selectedSeasonId !== 'all'}
 							<button
@@ -1334,7 +1436,7 @@
 								data-active={effectiveHistoryScope === 'act'}
 								class="seg-tab cursor-pointer rounded-lg px-2.5 py-1 font-mono text-[10px] font-bold whitespace-nowrap"
 							>
-								{activeSeasonHeading} ({filteredMatches.length})
+								{activeSeasonHeading} ({filteredTotal})
 							</button>
 						{/if}
 						<button
@@ -1346,9 +1448,9 @@
 							data-active={effectiveHistoryScope === 'all_acts'}
 							class="seg-tab cursor-pointer rounded-lg px-2.5 py-1 font-mono text-[10px] font-bold whitespace-nowrap"
 						>
-							All Acts · {queueTabs.find((t) => t.id === queueFilter)?.shortLabel ?? 'Queue'} ({queueMatches.length})
+							All Acts · {queueTabs.find((t) => t.id === queueFilter)?.shortLabel ?? 'Queue'} ({queueTotal})
 						</button>
-						{#if queueFilter !== 'all' && allMatches.length > queueMatches.length}
+						{#if queueFilter !== 'all' && allTotal > queueTotal}
 							<button
 								type="button"
 								onclick={() => {
@@ -1358,7 +1460,7 @@
 								data-active={effectiveHistoryScope === 'all_queues'}
 								class="seg-tab cursor-pointer rounded-lg px-2.5 py-1 font-mono text-[10px] font-bold whitespace-nowrap"
 							>
-								All Queues ({allMatches.length})
+								All Queues ({allTotal})
 							</button>
 						{/if}
 					</div>
@@ -1386,14 +1488,14 @@
 			</div>
 		</div>
 
-		{#if selectedSeasonId !== 'all' && selectedActMeta && selectedActMeta.games > filteredMatches.length}
+		{#if selectedSeasonId !== 'all' && selectedActMeta && selectedActMeta.games > filteredTotal}
 			<div
 				class="glass-neu flex flex-col gap-2.5 rounded-xl border border-white/10 px-3.5 py-3 text-xs text-slate-300 sm:flex-row sm:items-center sm:justify-between"
 			>
 				<div class="flex items-start gap-2.5">
 					<Info class="mt-0.5 h-4 w-4 shrink-0 text-neu-cyan" />
 					<p class="leading-relaxed">
-						{#if filteredMatches.length === 0}
+						{#if filteredTotal === 0}
 							Riot's PD API only retains full match details &amp; scoreboards for recent matches.
 							<strong class="font-mono text-white">{activeSeasonHeading}</strong>'s official record
 							(<strong class="font-mono text-white"
@@ -1401,7 +1503,7 @@
 							>) comes from Riot's career MMR summary above.
 						{:else}
 							<strong class="font-mono text-white"
-								>{filteredMatches.length} of {selectedActMeta.games}</strong
+								>{filteredTotal} of {selectedActMeta.games}</strong
 							>
 							competitive games from
 							<strong class="font-mono text-white">{activeSeasonHeading}</strong> are inside Riot's
@@ -1411,7 +1513,7 @@
 					</p>
 				</div>
 
-				{#if effectiveHistoryScope === 'act' && queueMatches.length > filteredMatches.length}
+				{#if effectiveHistoryScope === 'act' && queueTotal > filteredTotal}
 					<button
 						type="button"
 						onclick={() => {
@@ -1420,7 +1522,7 @@
 						}}
 						class="neu-btn shrink-0 cursor-pointer rounded-lg px-3 py-1.5 font-mono text-[10px] font-bold text-white"
 					>
-						Show All Indexed Acts ({queueMatches.length})
+						Show All Indexed Acts ({queueTotal})
 					</button>
 				{/if}
 			</div>
@@ -1431,12 +1533,13 @@
 				class="glass-neu flex flex-col items-center justify-center gap-3 rounded-2xl p-6 text-center"
 			>
 				<p class="text-xs text-slate-400">
-					No indexed {activeQueueLabel.toLowerCase()} match details found for
+					{historyTotal > 0 ? 'No loaded' : 'No indexed'}
+					{activeQueueLabel.toLowerCase()} match details found for
 					<span class="font-mono text-white">{activeSeasonHeading}</span>.
 				</p>
-				{#if allMatches.length > 0}
+				{#if allTotal > 0}
 					<div class="flex flex-wrap items-center justify-center gap-2">
-						{#if queueMatches.length > 0}
+						{#if queueTotal > 0}
 							<button
 								type="button"
 								onclick={() => {
@@ -1445,7 +1548,7 @@
 								}}
 								class="neu-btn cursor-pointer rounded-xl px-3.5 py-1.5 text-xs font-semibold text-white"
 							>
-								View All {queueTabs.find((t) => t.id === queueFilter)?.shortLabel} Matches ({queueMatches.length})
+								View All {queueTabs.find((t) => t.id === queueFilter)?.shortLabel} Matches ({queueTotal})
 							</button>
 						{/if}
 						<button
@@ -1456,7 +1559,7 @@
 							}}
 							class="neu-btn cursor-pointer rounded-xl px-3.5 py-1.5 text-xs font-semibold text-slate-200"
 						>
-							View All Indexed Matches ({allMatches.length})
+							View All Indexed Matches ({allTotal})
 						</button>
 					</div>
 				{/if}
@@ -1506,7 +1609,7 @@
 							<button
 								type="button"
 								aria-expanded={isExpanded}
-								onclick={() => (expandedMatchId = isExpanded ? null : match.matchId)}
+								onclick={() => toggleMatch(match)}
 								class="relative flex w-full cursor-pointer flex-col gap-3 px-4 py-3.5 text-left transition sm:px-5 lg:grid lg:grid-cols-[245px_215px_1fr_32px] lg:items-center lg:gap-4"
 								style="background: radial-gradient(circle at 0% 50%, {outcomeGlowRgba} 0%, transparent 45%);"
 							>
@@ -1736,191 +1839,203 @@
 							</button>
 
 							<!-- Smooth Animated 10-Player Match Scoreboard Drawer -->
-							{#if isExpanded && match.scoreboard.length > 0}
-								{@const meEntry = match.scoreboard.find(
-									(p) => p.puuid.toLowerCase() === ownerPuuid.toLowerCase()
-								)}
-								{@const myTeamId = meEntry?.teamId ?? 'Blue'}
-								{@const allies = isDeathmatch
-									? match.scoreboard
-									: match.scoreboard.filter((p) => p.teamId === myTeamId)}
-								{@const enemies = isDeathmatch
-									? []
-									: match.scoreboard.filter((p) => p.teamId !== myTeamId)}
-								{@const topLobbyAcs = Math.max(0, ...match.scoreboard.map((p) => p.acs))}
+							{#if isExpanded}
+								{#if match.scoreboard.length === 0}
+									<div
+										class="border-t border-white/10 bg-[#060911]/88 px-4 py-6 text-center text-xs text-slate-400"
+									>
+										{scoreboardLoading === match.matchId
+											? 'Loading scoreboard…'
+											: 'No stored scoreboard for this match.'}
+									</div>
+								{:else}
+									{@const meEntry = match.scoreboard.find(
+										(p) => p.puuid.toLowerCase() === ownerPuuid.toLowerCase()
+									)}
+									{@const myTeamId = meEntry?.teamId ?? 'Blue'}
+									{@const allies = isDeathmatch
+										? match.scoreboard
+										: match.scoreboard.filter((p) => p.teamId === myTeamId)}
+									{@const enemies = isDeathmatch
+										? []
+										: match.scoreboard.filter((p) => p.teamId !== myTeamId)}
+									{@const topLobbyAcs = Math.max(0, ...match.scoreboard.map((p) => p.acs))}
 
-								<div
-									transition:slide={{ duration: 260, easing: cubicOut }}
-									class="border-t border-white/10 bg-[#060911]/88"
-								>
-									<div in:fade={{ duration: 180 }} class="flex flex-col gap-3 p-3.5 sm:p-4">
-										<!-- Match Micro-Highlights Strip -->
-										<div class="flex flex-wrap items-center justify-between gap-2 text-[11px]">
-											<div class="flex flex-wrap items-center gap-2 font-mono text-slate-400">
-												<span
-													class="inline-flex items-center gap-1 rounded-lg bg-white/[0.04] px-2.5 py-1"
-												>
-													<Clock class="h-3 w-3 text-slate-400" />
-													{formatDuration(match.durationSeconds)} · {match.roundsPlayed} Rounds
-												</span>
-												<span
-													class="inline-flex items-center gap-1 rounded-lg bg-white/[0.04] px-2.5 py-1"
-												>
-													<Zap class="h-3 w-3 text-amber-300" />
-													{match.firstBloods} First {match.firstBloods === 1 ? 'Blood' : 'Bloods'}
-												</span>
-												<span
-													class="inline-flex items-center gap-1 rounded-lg bg-white/[0.04] px-2.5 py-1 {match.ddDeltaPerRound >=
-													0
-														? 'text-emerald-300'
-														: 'text-rose-300'}"
-												>
-													DDΔ {match.ddDeltaPerRound >= 0
-														? `+${match.ddDeltaPerRound}`
-														: match.ddDeltaPerRound}/rnd
-												</span>
-											</div>
-										</div>
-
-										{#snippet teamScoreboardTable(
-											title: string,
-											roundsCount: number | null,
-											accentClass: string,
-											players: HydratedMatchItem['scoreboard']
-										)}
-											<div class="neu-well overflow-x-auto rounded-xl p-2.5 sm:p-3">
-												<div class="mb-2 flex items-center justify-between px-2">
-													<p
-														class="font-mono text-[10px] font-bold tracking-wider uppercase {accentClass}"
+									<div
+										transition:slide={{ duration: 260, easing: cubicOut }}
+										class="border-t border-white/10 bg-[#060911]/88"
+									>
+										<div in:fade={{ duration: 180 }} class="flex flex-col gap-3 p-3.5 sm:p-4">
+											<!-- Match Micro-Highlights Strip -->
+											<div class="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+												<div class="flex flex-wrap items-center gap-2 font-mono text-slate-400">
+													<span
+														class="inline-flex items-center gap-1 rounded-lg bg-white/[0.04] px-2.5 py-1"
 													>
-														{title}
-													</p>
-													{#if roundsCount !== null}
-														<span
-															class="font-mono text-[10px] font-bold text-slate-400 tabular-nums"
-														>
-															{roundsCount}
-															{roundsCount === 1 ? 'Round' : 'Rounds'} Won
-														</span>
-													{/if}
+														<Clock class="h-3 w-3 text-slate-400" />
+														{formatDuration(match.durationSeconds)} · {match.roundsPlayed} Rounds
+													</span>
+													<span
+														class="inline-flex items-center gap-1 rounded-lg bg-white/[0.04] px-2.5 py-1"
+													>
+														<Zap class="h-3 w-3 text-amber-300" />
+														{match.firstBloods} First {match.firstBloods === 1 ? 'Blood' : 'Bloods'}
+													</span>
+													<span
+														class="inline-flex items-center gap-1 rounded-lg bg-white/[0.04] px-2.5 py-1 {match.ddDeltaPerRound >=
+														0
+															? 'text-emerald-300'
+															: 'text-rose-300'}"
+													>
+														DDΔ {match.ddDeltaPerRound >= 0
+															? `+${match.ddDeltaPerRound}`
+															: match.ddDeltaPerRound}/rnd
+													</span>
 												</div>
-
-												<table class="w-full min-w-[430px] text-left text-xs">
-													<thead>
-														<tr
-															class="border-b border-white/8 text-[10px] text-slate-400 uppercase"
-														>
-															<th class="px-2 py-1.5 font-semibold">Player</th>
-															<th class="px-2 py-1.5 text-right font-semibold">ACS</th>
-															<th class="px-2 py-1.5 text-right font-semibold">K/D/A</th>
-															<th class="px-2 py-1.5 text-right font-semibold">ADR</th>
-															<th class="px-2 py-1.5 text-right font-semibold">HS%</th>
-															<th class="px-2 py-1.5 text-right font-semibold">FB</th>
-														</tr>
-													</thead>
-													<tbody class="divide-y divide-white/5 font-mono text-[11px] tabular-nums">
-														{#each players as p (p.puuid)}
-															{@const isMe = p.puuid.toLowerCase() === ownerPuuid.toLowerCase()}
-															{@const label = resolveScoreboardPlayerLabel(p, isMe)}
-															{@const isLobbyMvp = topLobbyAcs > 0 && p.acs === topLobbyAcs}
-															<tr
-																class="transition-colors hover:bg-white/[0.03] {isMe
-																	? 'bg-neu-accent/14 text-white'
-																	: 'text-slate-300'}"
-															>
-																<td class="px-2 py-2 font-sans">
-																	<div class="flex min-w-0 items-center gap-2">
-																		{#if p.agentIcon}
-																			<img
-																				src={p.agentIcon}
-																				alt={p.agentName}
-																				title={p.agentName}
-																				class="h-6 w-6 shrink-0 rounded-md border border-white/10 bg-slate-900 object-cover"
-																			/>
-																		{/if}
-																		{#if p.rankIcon && p.competitiveTier >= 3}
-																			<img
-																				src={p.rankIcon}
-																				alt={p.rankName}
-																				title={p.rankName}
-																				class="h-4 w-4 shrink-0 object-contain"
-																			/>
-																		{/if}
-																		<div class="flex min-w-0 items-center gap-1.5">
-																			<span
-																				class="max-w-36 truncate text-xs font-semibold sm:max-w-44 {isMe
-																					? 'text-white'
-																					: label.isAgentFallback
-																						? 'text-slate-200'
-																						: 'text-slate-100'}"
-																				title={label.tag
-																					? `${label.primary}#${label.tag}`
-																					: label.primary}
-																			>
-																				{label.primary}{#if label.tag}<span
-																						class="font-mono text-[10px] font-normal text-slate-400"
-																						>#{label.tag}</span
-																					>{/if}
-																			</span>
-																			{#if isMe}
-																				<span
-																					class="shrink-0 rounded bg-neu-accent/25 px-1 py-0.5 font-mono text-[8px] font-extrabold text-rose-200 uppercase"
-																				>
-																					YOU
-																				</span>
-																			{:else if label.isAgentFallback}
-																				<span
-																					class="shrink-0 rounded bg-white/[0.06] px-1 py-0.5 font-mono text-[8px] font-semibold text-slate-400 uppercase"
-																					title="Riot ID hidden (Streamer Mode)"
-																				>
-																					Agent
-																				</span>
-																			{/if}
-																			{#if isLobbyMvp}
-																				<span
-																					class="shrink-0 rounded border border-amber-400/35 bg-amber-400/12 px-1 py-0.5 font-mono text-[8px] font-bold text-amber-300"
-																				>
-																					MVP
-																				</span>
-																			{/if}
-																		</div>
-																	</div>
-																</td>
-																<td class="px-2 py-2 text-right font-bold text-white">{p.acs}</td>
-																<td class="px-2 py-2 text-right">
-																	{p.kills}/{p.deaths}/{p.assists}
-																</td>
-																<td class="px-2 py-2 text-right">{p.adr.toFixed(0)}</td>
-																<td class="px-2 py-2 text-right text-neu-cyan">
-																	{p.hsPercent.toFixed(0)}%
-																</td>
-																<td class="px-2 py-2 text-right">{p.firstBloods}</td>
-															</tr>
-														{/each}
-													</tbody>
-												</table>
 											</div>
-										{/snippet}
 
-										<div class="grid gap-3.5 {enemies.length > 0 ? 'xl:grid-cols-2' : ''}">
-											{@render teamScoreboardTable(
-												isDeathmatch ? 'Lobby Standings' : 'Allied Team',
-												isDeathmatch ? null : match.roundsWon,
-												'text-emerald-400',
-												allies
+											{#snippet teamScoreboardTable(
+												title: string,
+												roundsCount: number | null,
+												accentClass: string,
+												players: HydratedMatchItem['scoreboard']
 											)}
+												<div class="neu-well overflow-x-auto rounded-xl p-2.5 sm:p-3">
+													<div class="mb-2 flex items-center justify-between px-2">
+														<p
+															class="font-mono text-[10px] font-bold tracking-wider uppercase {accentClass}"
+														>
+															{title}
+														</p>
+														{#if roundsCount !== null}
+															<span
+																class="font-mono text-[10px] font-bold text-slate-400 tabular-nums"
+															>
+																{roundsCount}
+																{roundsCount === 1 ? 'Round' : 'Rounds'} Won
+															</span>
+														{/if}
+													</div>
 
-											{#if enemies.length > 0}
+													<table class="w-full min-w-[430px] text-left text-xs">
+														<thead>
+															<tr
+																class="border-b border-white/8 text-[10px] text-slate-400 uppercase"
+															>
+																<th class="px-2 py-1.5 font-semibold">Player</th>
+																<th class="px-2 py-1.5 text-right font-semibold">ACS</th>
+																<th class="px-2 py-1.5 text-right font-semibold">K/D/A</th>
+																<th class="px-2 py-1.5 text-right font-semibold">ADR</th>
+																<th class="px-2 py-1.5 text-right font-semibold">HS%</th>
+																<th class="px-2 py-1.5 text-right font-semibold">FB</th>
+															</tr>
+														</thead>
+														<tbody
+															class="divide-y divide-white/5 font-mono text-[11px] tabular-nums"
+														>
+															{#each players as p (p.puuid)}
+																{@const isMe = p.puuid.toLowerCase() === ownerPuuid.toLowerCase()}
+																{@const label = resolveScoreboardPlayerLabel(p, isMe)}
+																{@const isLobbyMvp = topLobbyAcs > 0 && p.acs === topLobbyAcs}
+																<tr
+																	class="transition-colors hover:bg-white/[0.03] {isMe
+																		? 'bg-neu-accent/14 text-white'
+																		: 'text-slate-300'}"
+																>
+																	<td class="px-2 py-2 font-sans">
+																		<div class="flex min-w-0 items-center gap-2">
+																			{#if p.agentIcon}
+																				<img
+																					src={p.agentIcon}
+																					alt={p.agentName}
+																					title={p.agentName}
+																					class="h-6 w-6 shrink-0 rounded-md border border-white/10 bg-slate-900 object-cover"
+																				/>
+																			{/if}
+																			{#if p.rankIcon && p.competitiveTier >= 3}
+																				<img
+																					src={p.rankIcon}
+																					alt={p.rankName}
+																					title={p.rankName}
+																					class="h-4 w-4 shrink-0 object-contain"
+																				/>
+																			{/if}
+																			<div class="flex min-w-0 items-center gap-1.5">
+																				<span
+																					class="max-w-36 truncate text-xs font-semibold sm:max-w-44 {isMe
+																						? 'text-white'
+																						: label.isAgentFallback
+																							? 'text-slate-200'
+																							: 'text-slate-100'}"
+																					title={label.tag
+																						? `${label.primary}#${label.tag}`
+																						: label.primary}
+																				>
+																					{label.primary}{#if label.tag}<span
+																							class="font-mono text-[10px] font-normal text-slate-400"
+																							>#{label.tag}</span
+																						>{/if}
+																				</span>
+																				{#if isMe}
+																					<span
+																						class="shrink-0 rounded bg-neu-accent/25 px-1 py-0.5 font-mono text-[8px] font-extrabold text-rose-200 uppercase"
+																					>
+																						YOU
+																					</span>
+																				{:else if label.isAgentFallback}
+																					<span
+																						class="shrink-0 rounded bg-white/[0.06] px-1 py-0.5 font-mono text-[8px] font-semibold text-slate-400 uppercase"
+																						title="Riot ID hidden (Streamer Mode)"
+																					>
+																						Agent
+																					</span>
+																				{/if}
+																				{#if isLobbyMvp}
+																					<span
+																						class="shrink-0 rounded border border-amber-400/35 bg-amber-400/12 px-1 py-0.5 font-mono text-[8px] font-bold text-amber-300"
+																					>
+																						MVP
+																					</span>
+																				{/if}
+																			</div>
+																		</div>
+																	</td>
+																	<td class="px-2 py-2 text-right font-bold text-white">{p.acs}</td>
+																	<td class="px-2 py-2 text-right">
+																		{p.kills}/{p.deaths}/{p.assists}
+																	</td>
+																	<td class="px-2 py-2 text-right">{p.adr.toFixed(0)}</td>
+																	<td class="px-2 py-2 text-right text-neu-cyan">
+																		{p.hsPercent.toFixed(0)}%
+																	</td>
+																	<td class="px-2 py-2 text-right">{p.firstBloods}</td>
+																</tr>
+															{/each}
+														</tbody>
+													</table>
+												</div>
+											{/snippet}
+
+											<div class="grid gap-3.5 {enemies.length > 0 ? 'xl:grid-cols-2' : ''}">
 												{@render teamScoreboardTable(
-													'Enemy Team',
-													match.roundsLost,
-													'text-rose-400',
-													enemies
+													isDeathmatch ? 'Lobby Standings' : 'Allied Team',
+													isDeathmatch ? null : match.roundsWon,
+													'text-emerald-400',
+													allies
 												)}
-											{/if}
+
+												{#if enemies.length > 0}
+													{@render teamScoreboardTable(
+														'Enemy Team',
+														match.roundsLost,
+														'text-rose-400',
+														enemies
+													)}
+												{/if}
+											</div>
 										</div>
 									</div>
-								</div>
+								{/if}
 							{/if}
 						</article>
 					{/each}
@@ -1964,7 +2079,7 @@
 				</div>
 
 				{#if totalPages > 1}
-					<div class="flex items-center justify-center gap-1 sm:justify-end">
+					<div class="flex flex-wrap items-center justify-center gap-1 sm:justify-end">
 						<button
 							type="button"
 							disabled={safePage <= 1}
@@ -2003,6 +2118,20 @@
 					</div>
 				{/if}
 			</nav>
+		{/if}
+		{#if allMatches.length < storedTotal}
+			<div class="flex justify-center">
+				<button
+					type="button"
+					disabled={loadingOlder}
+					onclick={loadOlderMatches}
+					class="neu-btn cursor-pointer rounded-xl px-4 py-2 text-xs font-semibold text-slate-200 disabled:opacity-50"
+				>
+					{loadingOlder
+						? 'Loading older matches…'
+						: `Load older matches — ${allMatches.length} of ${storedTotal} indexed`}
+				</button>
+			</div>
 		{/if}
 	</section>
 </div>

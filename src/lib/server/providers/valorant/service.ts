@@ -1,11 +1,13 @@
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, isNull, lt, or, sql } from 'drizzle-orm';
 import { ENCRYPTION_MASTER_KEY, HENRIKDEV_API_KEY } from '$app/env/private';
 import { safeErrorMessage } from '../../crypto/redact';
 import { openPayload, sealPayload } from '../../crypto/seal';
 import { getDb, schema } from '../../db';
 import { calculateProportionalValuation, type SupportedCurrency } from '../../valuation/money';
 import {
+	CURRENCY_ICONS,
 	DEFAULT_ID_VP_PACK_PROFILE,
+	EMPTY_ASSET_INDEX,
 	getIdrToUsdFxRate,
 	getPlayerCardMeta,
 	getPlayerTitleText,
@@ -51,6 +53,9 @@ import {
 	parseDetailedMatch,
 	parseHenrikStoredMatch,
 	parseHenrikV4Match,
+	summarizeMatchStats,
+	summarizeTrackerScopes,
+	trackerQueueBucket,
 	type HydratedMatchItem,
 	type StoredCareerProfile,
 	type StoredMatchRecord
@@ -64,6 +69,35 @@ interface SealedRiotSession {
 }
 
 const REFRESH_COOLDOWN_MS = 12_000;
+/** Lease window for cross-worker refresh de-duplication; expires if a worker dies mid-sync. */
+const SYNC_LEASE_MS = 5 * 60_000;
+/** End-to-end upstream budget: normal refresh stays interactive, deep history gets more room. */
+const SYNC_BUDGET_MS = 75_000;
+const DEEP_SYNC_BUDGET_MS = 180_000;
+/** Initial match page returned with the dashboard; older matches load via /api/valorant/matches. */
+const TRACKER_MATCH_PAGE_SIZE = 40;
+/** Bounded retention for append-only snapshot tables (tracker keeps one canonical merged row). */
+const STORE_SNAPSHOT_KEEP = 5;
+const INVENTORY_SNAPSHOT_KEEP = 5;
+
+type SnapshotTable = 'tracker_snapshots' | 'store_snapshots' | 'inventory_snapshots';
+
+async function pruneSnapshots(
+	table: SnapshotTable,
+	linkedAccountId: string,
+	keep: number
+): Promise<void> {
+	await getDb().execute(sql`
+		delete from ${sql.raw(table)}
+		where linked_account_id = ${linkedAccountId}
+		and id not in (
+			select id from ${sql.raw(table)}
+			where linked_account_id = ${linkedAccountId}
+			order by fetched_at desc, created_at desc, id
+			limit ${keep}
+		)
+	`);
+}
 
 function requireMasterKey(): string {
 	if (!ENCRYPTION_MASTER_KEY) {
@@ -280,8 +314,9 @@ async function syncTrackerWithHenrikDev(params: {
 	account: typeof schema.linkedAccounts.$inferSelect;
 	apiKey: string;
 	hydrateScoreboardLimit?: number;
+	deadlineAt?: number;
 }): Promise<boolean> {
-	const { account, apiKey, hydrateScoreboardLimit = 12 } = params;
+	const { account, apiKey, hydrateScoreboardLimit = 12, deadlineAt } = params;
 	const db = getDb();
 	try {
 		const [assets, bundle, prevRows] = await Promise.all([
@@ -293,12 +328,15 @@ async function syncTrackerWithHenrikDev(params: {
 				region: account.region,
 				apiKey
 			}),
+			// All prior rows: the canonical merged row below must preserve every unique match.
 			db
-				.select()
+				.select({
+					profileJson: schema.trackerSnapshots.profileJson,
+					matchesJson: schema.trackerSnapshots.matchesJson
+				})
 				.from(schema.trackerSnapshots)
 				.where(eq(schema.trackerSnapshots.linkedAccountId, account.id))
 				.orderBy(desc(schema.trackerSnapshots.fetchedAt))
-				.limit(5)
 		]);
 
 		let existingMatches: StoredMatchRecord[] = [];
@@ -326,7 +364,11 @@ async function syncTrackerWithHenrikDev(params: {
 
 		const hydratedV4Records: StoredMatchRecord[] = [];
 		const BATCH_SIZE = 4;
-		for (let i = 0; i < missingScoreboardIds.length; i += BATCH_SIZE) {
+		for (
+			let i = 0;
+			i < missingScoreboardIds.length && (deadlineAt === undefined || Date.now() < deadlineAt);
+			i += BATCH_SIZE
+		) {
 			const batch = missingScoreboardIds.slice(i, i + BATCH_SIZE);
 			const settled = await Promise.allSettled(
 				batch.map((id) => fetchHenrikMatchV4Raw(account.region, id, apiKey))
@@ -354,29 +396,37 @@ async function syncTrackerWithHenrikDev(params: {
 		if (!careerProfile && merged.length === 0) return false;
 
 		const syncedAt = new Date();
-		await db.insert(schema.trackerSnapshots).values({
-			linkedAccountId: account.id,
-			fetchedAt: syncedAt,
-			profileJson: careerProfile ??
-				prevCareer ?? {
-					accountLevel: null,
-					accountXp: null,
-					playerCardId: null,
-					playerTitleId: null,
-					latestSeasonId: null,
-					currentTier: 0,
-					currentRr: 0,
-					lastRrDelta: null,
-					lastRankedMatchId: null,
-					actWins: 0,
-					actGames: 0,
-					peakTier: 0,
-					peakSeasonId: null,
-					actHistory: []
-				},
-			matchesJson: merged,
-			parserVersion: 3
-		});
+		const [inserted] = await db
+			.insert(schema.trackerSnapshots)
+			.values({
+				linkedAccountId: account.id,
+				fetchedAt: syncedAt,
+				profileJson: careerProfile ??
+					prevCareer ?? {
+						accountLevel: null,
+						accountXp: null,
+						playerCardId: null,
+						playerTitleId: null,
+						latestSeasonId: null,
+						currentTier: 0,
+						currentRr: 0,
+						lastRrDelta: null,
+						lastRankedMatchId: null,
+						actWins: 0,
+						actGames: 0,
+						peakTier: 0,
+						peakSeasonId: null,
+						actHistory: []
+					},
+				matchesJson: merged,
+				parserVersion: 3
+			})
+			.returning({ id: schema.trackerSnapshots.id });
+
+		// Canonical state: the merged row holds the union, so older copies can go.
+		if (inserted) {
+			await pruneSnapshots('tracker_snapshots', account.id, 1);
+		}
 
 		const hAcc = bundle.account as { name?: string; tag?: string } | null;
 		await db
@@ -394,7 +444,8 @@ async function syncTrackerWithHenrikDev(params: {
 			.where(eq(schema.linkedAccounts.id, account.id));
 
 		return true;
-	} catch {
+	} catch (err) {
+		console.warn('[henrik-sync]', safeErrorMessage(err));
 		return false;
 	}
 }
@@ -403,7 +454,7 @@ export async function syncValorantAccountData(
 	userId: string,
 	accountId: string,
 	opts: { bypassCooldown?: boolean; deepHistory?: boolean } = {}
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<{ ok: boolean; error?: string; inProgress?: boolean }> {
 	const db = getDb();
 	const masterKey = requireMasterKey();
 	const henrikKey = HENRIKDEV_API_KEY?.trim() || '';
@@ -427,75 +478,56 @@ export async function syncValorantAccountData(
 		return { ok: true };
 	}
 
-	// When the user explicitly requests Fetch Deep History and HenrikDev is configured, run HenrikDev directly
-	if (opts.deepHistory && henrikKey) {
-		const ok = await syncTrackerWithHenrikDev({
-			account,
-			apiKey: henrikKey,
-			hydrateScoreboardLimit: 20
-		});
-		if (ok) return { ok: true };
-	}
+	// Atomic expiring lease on the owned account row: concurrent refreshes across tabs or
+	// workers collapse to one winner; a crashed worker's lease simply expires.
+	const leaseUntil = new Date(Date.now() + SYNC_LEASE_MS);
+	const claimed = await db
+		.update(schema.linkedAccounts)
+		.set({ syncLockedUntil: leaseUntil })
+		.where(
+			and(
+				eq(schema.linkedAccounts.id, accountId),
+				eq(schema.linkedAccounts.userId, userId),
+				or(
+					isNull(schema.linkedAccounts.syncLockedUntil),
+					lt(schema.linkedAccounts.syncLockedUntil, new Date())
+				)
+			)
+		)
+		.returning({ id: schema.linkedAccounts.id });
+	if (!claimed[0]) return { ok: true, inProgress: true };
 
-	const sessRows = await db
-		.select()
-		.from(schema.providerSessions)
-		.where(eq(schema.providerSessions.linkedAccountId, accountId))
-		.limit(1);
+	const startedAt = performance.now();
+	const deadlineAt = Date.now() + (opts.deepHistory ? DEEP_SYNC_BUDGET_MS : SYNC_BUDGET_MS);
+	const withinBudget = () => Date.now() < deadlineAt;
+	const logPhase = (phase: string, data: Record<string, unknown> = {}) =>
+		console.info(
+			'[valorant-sync]',
+			phase,
+			JSON.stringify({ accountId, ms: Math.round(performance.now() - startedAt), ...data })
+		);
 
-	const providerSession = sessRows[0];
-	if (!providerSession) {
-		await db
-			.update(schema.linkedAccounts)
-			.set({ connectionStatus: 'reconnect_required', updatedAt: new Date() })
-			.where(eq(schema.linkedAccounts.id, accountId));
-		if (henrikKey) {
-			const hOk = await syncTrackerWithHenrikDev({ account, apiKey: henrikKey });
-			if (hOk && opts.deepHistory) return { ok: true };
-		}
-		return { ok: false, error: 'Session missing; please reconnect Riot account.' };
-	}
-
-	let unsealed: SealedRiotSession;
 	try {
-		unsealed = JSON.parse(
-			openPayload(providerSession.sealedPayload, masterKey, accountId)
-		) as SealedRiotSession;
-	} catch {
-		return { ok: false, error: 'Failed to decrypt Riot session. Please reconnect.' };
-	}
-
-	const now = Date.now();
-	const tokenExpired =
-		!providerSession.accessTokenExpiresAt ||
-		providerSession.accessTokenExpiresAt.getTime() - now < 60_000;
-
-	if (tokenExpired) {
-		if (!unsealed.cookies?.ssid) {
-			await db
-				.update(schema.linkedAccounts)
-				.set({ connectionStatus: 'reconnect_required', updatedAt: new Date() })
-				.where(eq(schema.linkedAccounts.id, accountId));
-			if (henrikKey) {
-				const hOk = await syncTrackerWithHenrikDev({ account, apiKey: henrikKey });
-				if (hOk) {
-					return opts.deepHistory
-						? { ok: true }
-						: {
-								ok: false,
-								error:
-									'Tracker match history synced via HenrikDev. Reconnect Riot URL/ssid to refresh Daily Shop & Inventory.'
-							};
-				}
-			}
-			return {
-				ok: false,
-				error: 'Short-lived Riot token expired. Paste a fresh Redirect URL or add an ssid cookie.'
-			};
+		// When the user explicitly requests Fetch Deep History and HenrikDev is configured, run HenrikDev directly
+		if (opts.deepHistory && henrikKey) {
+			const ok = await syncTrackerWithHenrikDev({
+				account,
+				apiKey: henrikKey,
+				hydrateScoreboardLimit: 20,
+				deadlineAt
+			});
+			logPhase('henrik-deep-history', { ok });
+			if (ok) return { ok: true };
 		}
 
-		const renewed = await renewSessionWithCookies(unsealed.cookies);
-		if (renewed.status !== 'ok') {
+		const sessRows = await db
+			.select()
+			.from(schema.providerSessions)
+			.where(eq(schema.providerSessions.linkedAccountId, accountId))
+			.limit(1);
+
+		const providerSession = sessRows[0];
+		if (!providerSession) {
 			await db
 				.update(schema.linkedAccounts)
 				.set({ connectionStatus: 'reconnect_required', updatedAt: new Date() })
@@ -504,343 +536,458 @@ export async function syncValorantAccountData(
 				const hOk = await syncTrackerWithHenrikDev({ account, apiKey: henrikKey });
 				if (hOk && opts.deepHistory) return { ok: true };
 			}
-			return {
-				ok: false,
-				error: `Session renewal failed (${renewed.status}). Please reconnect your Riot account.`
-			};
+			return { ok: false, error: 'Session missing; please reconnect Riot account.' };
 		}
 
-		const newEntitlements = await fetchEntitlementsToken(renewed.tokens.accessToken);
-		unsealed = {
-			accessToken: renewed.tokens.accessToken,
-			idToken: renewed.tokens.idToken,
-			entitlementsToken: newEntitlements,
-			cookies: renewed.cookies
-		};
-		const newExpiresAt = new Date(Date.now() + renewed.tokens.expiresInSeconds * 1000);
-		await db
-			.update(schema.providerSessions)
-			.set({
-				sealedPayload: sealPayload(JSON.stringify(unsealed), masterKey, accountId),
-				accessTokenExpiresAt: newExpiresAt,
-				lastRenewedAt: new Date(),
-				updatedAt: new Date()
-			})
-			.where(eq(schema.providerSessions.linkedAccountId, accountId));
-	}
+		let unsealed: SealedRiotSession;
+		try {
+			unsealed = JSON.parse(
+				openPayload(providerSession.sealedPayload, masterKey, accountId)
+			) as SealedRiotSession;
+		} catch {
+			return { ok: false, error: 'Failed to decrypt Riot session. Please reconnect.' };
+		}
 
-	try {
-		const [clientVersion, assets] = await Promise.all([
-			fetchRiotClientVersion(),
-			getValorantAssetIndex()
-		]);
+		const now = Date.now();
+		const tokenExpired =
+			!providerSession.accessTokenExpiresAt ||
+			providerSession.accessTokenExpiresAt.getTime() - now < 60_000;
 
-		const ctx: ValorantSessionContext = {
-			puuid: account.puuid,
-			shard: regionToPdShard(account.region),
-			region: account.region,
-			accessToken: unsealed.accessToken,
-			entitlementsToken: unsealed.entitlementsToken,
-			clientVersion
-		};
-
-		const [
-			storeRes,
-			walletRes,
-			skinsRes,
-			chromasRes,
-			buddiesRes,
-			matchesRes,
-			compMatchesRes,
-			compUpdatesRes,
-			xpRes,
-			mmrRes,
-			prevTrackerRows
-		] = await Promise.allSettled([
-			fetchStorefront(ctx),
-			fetchWallet(ctx),
-			fetchOwnedCategory(ctx, 'SKIN_LEVELS'),
-			fetchOwnedCategory(ctx, 'SKIN_CHROMAS'),
-			fetchOwnedCategory(ctx, 'BUDDIES'),
-			fetchMatchHistory(ctx, { startIndex: 0, endIndex: 20 }),
-			fetchMatchHistory(ctx, { startIndex: 0, endIndex: 20, queue: 'competitive' }),
-			fetchCompetitiveUpdates(ctx, { startIndex: 0, endIndex: 20, queue: 'competitive' }),
-			fetchAccountXpRaw(ctx),
-			fetchPlayerMmrRaw(ctx),
-			db
-				.select()
-				.from(schema.trackerSnapshots)
-				.where(eq(schema.trackerSnapshots.linkedAccountId, accountId))
-				.orderBy(desc(schema.trackerSnapshots.fetchedAt))
-				.limit(5)
-		]);
-
-		const syncedAt = new Date();
-
-		if (storeRes.status === 'fulfilled') {
-			const store: NormalizedStorefront = storeRes.value;
-			const wallet = walletRes.status === 'fulfilled' ? walletRes.value : null;
-
-			await db.insert(schema.storeSnapshots).values({
-				linkedAccountId: accountId,
-				fetchedAt: new Date(store.fetchedAt),
-				dailyExpiresAt: new Date(store.dailyExpiresAt),
-				bonusExpiresAt:
-					store.nightMarket.status === 'active' ? new Date(store.nightMarket.expiresAt) : null,
-				offersJson: store,
-				walletJson: wallet,
-				parserVersion: 2
-			});
-		} else {
-			const errMsg = safeErrorMessage(storeRes.reason);
-			if (errMsg.includes('HTTP 400') || errMsg.includes('HTTP 401')) {
+		if (tokenExpired) {
+			if (!unsealed.cookies?.ssid) {
 				await db
 					.update(schema.linkedAccounts)
 					.set({ connectionStatus: 'reconnect_required', updatedAt: new Date() })
 					.where(eq(schema.linkedAccounts.id, accountId));
-				return {
-					ok: false,
-					error: 'Riot session token expired. Click Link / Reconnect to paste a fresh Redirect URL.'
-				};
-			}
-			return { ok: false, error: errMsg };
-		}
-
-		if (skinsRes.status === 'fulfilled') {
-			const skinLevelIds = skinsRes.value.Entitlements.map((e) => e.ItemID.toLowerCase());
-			const chromaIds =
-				chromasRes.status === 'fulfilled'
-					? chromasRes.value.Entitlements.map((e) => e.ItemID.toLowerCase())
-					: [];
-			const buddyCount =
-				buddiesRes.status === 'fulfilled' ? buddiesRes.value.Entitlements.length : null;
-			const matches = matchesRes.status === 'fulfilled' ? matchesRes.value : null;
-
-			await db.insert(schema.inventorySnapshots).values({
-				linkedAccountId: accountId,
-				fetchedAt: syncedAt,
-				skinLevelIdsJson: skinLevelIds,
-				chromaIdsJson: chromaIds,
-				buddyCount,
-				matchesJson: matches,
-				parserVersion: 1
-			});
-		}
-
-		// Paginate additional Riot PD match-history & competitive-updates slices when available
-		const maxGeneralIndex = opts.deepHistory ? 100 : 60;
-		const maxCompIndex = opts.deepHistory ? 80 : 40;
-		const extraPagesPromises: Array<Promise<unknown>> = [];
-		if (matchesRes.status === 'fulfilled' && matchesRes.value.Total > matchesRes.value.EndIndex) {
-			const total = Math.min(matchesRes.value.Total, maxGeneralIndex);
-			for (let start = matchesRes.value.EndIndex; start < total; start += 20) {
-				extraPagesPromises.push(
-					fetchMatchHistory(ctx, { startIndex: start, endIndex: Math.min(start + 20, total) })
-				);
-			}
-		}
-		if (
-			compMatchesRes.status === 'fulfilled' &&
-			compMatchesRes.value.Total > compMatchesRes.value.EndIndex
-		) {
-			const totalComp = Math.min(compMatchesRes.value.Total, maxCompIndex);
-			for (let start = compMatchesRes.value.EndIndex; start < totalComp; start += 20) {
-				extraPagesPromises.push(
-					fetchMatchHistory(ctx, {
-						startIndex: start,
-						endIndex: Math.min(start + 20, totalComp),
-						queue: 'competitive'
-					})
-				);
-			}
-		}
-		if (opts.deepHistory) {
-			for (const q of ['unrated', 'deathmatch', 'swiftplay']) {
-				extraPagesPromises.push(fetchMatchHistory(ctx, { startIndex: 0, endIndex: 20, queue: q }));
-			}
-		}
-		if (compUpdatesRes.status === 'fulfilled' && compUpdatesRes.value.Matches.length >= 15) {
-			extraPagesPromises.push(
-				fetchCompetitiveUpdates(ctx, { startIndex: 20, endIndex: 40, queue: 'competitive' })
-			);
-			if (opts.deepHistory) {
-				extraPagesPromises.push(
-					fetchCompetitiveUpdates(ctx, { startIndex: 40, endIndex: 60, queue: 'competitive' })
-				);
-			}
-		}
-
-		const extraPagesSettled =
-			extraPagesPromises.length > 0 ? await Promise.allSettled(extraPagesPromises) : [];
-
-		const rrDeltaByMatchId = new Map<string, number>();
-		const orderedMatchIds: string[] = [];
-		const seenMatchIds = new Set<string>();
-		const pushMatchId = (id: string | undefined) => {
-			const trimmed = id?.trim();
-			if (!trimmed) return;
-			const lower = trimmed.toLowerCase();
-			if (seenMatchIds.has(lower)) return;
-			seenMatchIds.add(lower);
-			orderedMatchIds.push(trimmed);
-		};
-
-		if (matchesRes.status === 'fulfilled') {
-			for (const h of matchesRes.value.History) pushMatchId(h.MatchID);
-		}
-		if (compMatchesRes.status === 'fulfilled') {
-			for (const h of compMatchesRes.value.History) pushMatchId(h.MatchID);
-		}
-		if (compUpdatesRes.status === 'fulfilled') {
-			for (const u of compUpdatesRes.value.Matches) {
-				pushMatchId(u.MatchID);
-				if (typeof u.RankedRatingEarned === 'number') {
-					rrDeltaByMatchId.set(u.MatchID.toLowerCase(), u.RankedRatingEarned);
-				}
-			}
-		}
-		for (const res of extraPagesSettled) {
-			if (res.status !== 'fulfilled' || !res.value || typeof res.value !== 'object') continue;
-			const val = res.value as {
-				History?: Array<{ MatchID: string }>;
-				Matches?: Array<{ MatchID: string; RankedRatingEarned?: number }>;
-			};
-			for (const h of val.History ?? []) pushMatchId(h.MatchID);
-			for (const u of val.Matches ?? []) {
-				pushMatchId(u.MatchID);
-				if (typeof u.RankedRatingEarned === 'number') {
-					rrDeltaByMatchId.set(u.MatchID.toLowerCase(), u.RankedRatingEarned);
-				}
-			}
-		}
-
-		// Reuse previously indexed match records so we only fetch details for new matches
-		let existingMatches: StoredMatchRecord[] = [];
-		let prevCareer: StoredCareerProfile | null = null;
-		if (prevTrackerRows.status === 'fulfilled') {
-			for (const row of [...prevTrackerRows.value].reverse()) {
-				const rowMatches = (row.matchesJson as StoredMatchRecord[]) ?? [];
-				existingMatches = mergeStoredMatches(existingMatches, rowMatches, rrDeltaByMatchId);
-			}
-			prevCareer = (prevTrackerRows.value[0]?.profileJson as StoredCareerProfile) ?? null;
-		}
-		const existingById = new Map(existingMatches.map((m) => [m.matchId.toLowerCase(), m]));
-
-		// Always fetch the newest match (for fresh playerCard/title) + any unindexed match IDs (bounded)
-		const newestMatchId = orderedMatchIds[0];
-		const missingMatchIds = orderedMatchIds.filter(
-			(id, idx) => idx === 0 || !existingById.has(id.toLowerCase())
-		);
-		const idsToFetch = missingMatchIds.slice(0, 35);
-
-		// ponytail: batch size 8 keeps Riot PD concurrency safe without a queue dependency
-		const rawMatchPayloads: unknown[] = [];
-		let latestMatchRaw: unknown | null = null;
-		const BATCH_SIZE = 8;
-		for (let i = 0; i < idsToFetch.length; i += BATCH_SIZE) {
-			const batch = idsToFetch.slice(i, i + BATCH_SIZE);
-			const settled = await Promise.allSettled(batch.map((id) => fetchMatchDetailsRaw(ctx, id)));
-			settled.forEach((r, idx) => {
-				if (r.status === 'fulfilled') {
-					rawMatchPayloads.push(r.value);
-					if (newestMatchId && batch[idx]?.toLowerCase() === newestMatchId.toLowerCase()) {
-						latestMatchRaw = r.value;
+				if (henrikKey) {
+					const hOk = await syncTrackerWithHenrikDev({ account, apiKey: henrikKey });
+					if (hOk) {
+						return opts.deepHistory
+							? { ok: true }
+							: {
+									ok: false,
+									error:
+										'Tracker match history synced via HenrikDev. Reconnect Riot URL/ssid to refresh Daily Shop & Inventory.'
+								};
 					}
 				}
-			});
+				return {
+					ok: false,
+					error: 'Short-lived Riot token expired. Paste a fresh Redirect URL or add an ssid cookie.'
+				};
+			}
+
+			const renewed = await renewSessionWithCookies(unsealed.cookies);
+			if (renewed.status !== 'ok') {
+				await db
+					.update(schema.linkedAccounts)
+					.set({ connectionStatus: 'reconnect_required', updatedAt: new Date() })
+					.where(eq(schema.linkedAccounts.id, accountId));
+				if (henrikKey) {
+					const hOk = await syncTrackerWithHenrikDev({ account, apiKey: henrikKey });
+					if (hOk && opts.deepHistory) return { ok: true };
+				}
+				return {
+					ok: false,
+					error: `Session renewal failed (${renewed.status}). Please reconnect your Riot account.`
+				};
+			}
+
+			const newEntitlements = await fetchEntitlementsToken(renewed.tokens.accessToken);
+			unsealed = {
+				accessToken: renewed.tokens.accessToken,
+				idToken: renewed.tokens.idToken,
+				entitlementsToken: newEntitlements,
+				cookies: renewed.cookies
+			};
+			const newExpiresAt = new Date(Date.now() + renewed.tokens.expiresInSeconds * 1000);
+			await db
+				.update(schema.providerSessions)
+				.set({
+					sealedPayload: sealPayload(JSON.stringify(unsealed), masterKey, accountId),
+					accessTokenExpiresAt: newExpiresAt,
+					lastRenewedAt: new Date(),
+					updatedAt: new Date()
+				})
+				.where(eq(schema.providerSessions.linkedAccountId, accountId));
 		}
 
-		const careerProfile = extractCareerProfile({
-			rawXp: xpRes.status === 'fulfilled' ? xpRes.value : null,
-			rawMmr: mmrRes.status === 'fulfilled' ? mmrRes.value : null,
-			latestMatchRaw: latestMatchRaw ?? rawMatchPayloads[0] ?? null,
-			ownerPuuid: account.puuid,
-			seasonsById: assets.seasonsById
-		});
-		if (!careerProfile.playerCardId && prevCareer?.playerCardId) {
-			careerProfile.playerCardId = prevCareer.playerCardId;
-		}
-		if (!careerProfile.playerTitleId && prevCareer?.playerTitleId) {
-			careerProfile.playerTitleId = prevCareer.playerTitleId;
-		}
-		if (careerProfile.accountLevel === null && prevCareer?.accountLevel !== null) {
-			careerProfile.accountLevel = prevCareer?.accountLevel ?? null;
-		}
-		if (
-			careerProfile.lastRankedMatchId &&
-			typeof careerProfile.lastRrDelta === 'number' &&
-			!rrDeltaByMatchId.has(careerProfile.lastRankedMatchId.toLowerCase())
-		) {
-			rrDeltaByMatchId.set(
-				careerProfile.lastRankedMatchId.toLowerCase(),
-				careerProfile.lastRrDelta
+		try {
+			const [clientVersion, assets] = await Promise.all([
+				fetchRiotClientVersion(),
+				getValorantAssetIndex()
+			]);
+
+			const ctx: ValorantSessionContext = {
+				puuid: account.puuid,
+				shard: regionToPdShard(account.region),
+				region: account.region,
+				accessToken: unsealed.accessToken,
+				entitlementsToken: unsealed.entitlementsToken,
+				clientVersion
+			};
+
+			const [
+				storeRes,
+				walletRes,
+				skinsRes,
+				chromasRes,
+				buddiesRes,
+				matchesRes,
+				compMatchesRes,
+				compUpdatesRes,
+				xpRes,
+				mmrRes,
+				prevTrackerRows
+			] = await Promise.allSettled([
+				fetchStorefront(ctx),
+				fetchWallet(ctx),
+				fetchOwnedCategory(ctx, 'SKIN_LEVELS'),
+				fetchOwnedCategory(ctx, 'SKIN_CHROMAS'),
+				fetchOwnedCategory(ctx, 'BUDDIES'),
+				fetchMatchHistory(ctx, { startIndex: 0, endIndex: 20 }),
+				fetchMatchHistory(ctx, { startIndex: 0, endIndex: 20, queue: 'competitive' }),
+				fetchCompetitiveUpdates(ctx, { startIndex: 0, endIndex: 20, queue: 'competitive' }),
+				fetchAccountXpRaw(ctx),
+				fetchPlayerMmrRaw(ctx),
+				db
+					.select({
+						profileJson: schema.trackerSnapshots.profileJson,
+						matchesJson: schema.trackerSnapshots.matchesJson
+					})
+					.from(schema.trackerSnapshots)
+					.where(eq(schema.trackerSnapshots.linkedAccountId, accountId))
+					.orderBy(desc(schema.trackerSnapshots.fetchedAt))
+			]);
+			if (prevTrackerRows.status === 'rejected') {
+				throw new Error('Could not read existing match history; sync was stopped to preserve it.', {
+					cause: prevTrackerRows.reason
+				});
+			}
+
+			logPhase('fan-out', {
+				store: storeRes.status,
+				inventory: skinsRes.status,
+				history: matchesRes.status,
+				compHistory: compMatchesRes.status
+			});
+
+			const syncedAt = new Date();
+
+			if (storeRes.status === 'fulfilled') {
+				const store: NormalizedStorefront = storeRes.value;
+				const wallet = walletRes.status === 'fulfilled' ? walletRes.value : null;
+
+				await db.insert(schema.storeSnapshots).values({
+					linkedAccountId: accountId,
+					fetchedAt: new Date(store.fetchedAt),
+					dailyExpiresAt: new Date(store.dailyExpiresAt),
+					bonusExpiresAt:
+						store.nightMarket.status === 'active' ? new Date(store.nightMarket.expiresAt) : null,
+					offersJson: store,
+					walletJson: wallet,
+					parserVersion: 2
+				});
+				await pruneSnapshots('store_snapshots', accountId, STORE_SNAPSHOT_KEEP);
+			} else {
+				const errMsg = safeErrorMessage(storeRes.reason);
+				if (errMsg.includes('HTTP 400') || errMsg.includes('HTTP 401')) {
+					await db
+						.update(schema.linkedAccounts)
+						.set({ connectionStatus: 'reconnect_required', updatedAt: new Date() })
+						.where(eq(schema.linkedAccounts.id, accountId));
+					return {
+						ok: false,
+						error:
+							'Riot session token expired. Click Link / Reconnect to paste a fresh Redirect URL.'
+					};
+				}
+				return { ok: false, error: errMsg };
+			}
+
+			if (skinsRes.status === 'fulfilled') {
+				const skinLevelIds = skinsRes.value.Entitlements.map((e) => e.ItemID.toLowerCase());
+				const chromaIds =
+					chromasRes.status === 'fulfilled'
+						? chromasRes.value.Entitlements.map((e) => e.ItemID.toLowerCase())
+						: [];
+				const buddyCount =
+					buddiesRes.status === 'fulfilled' ? buddiesRes.value.Entitlements.length : null;
+
+				await db.insert(schema.inventorySnapshots).values({
+					linkedAccountId: accountId,
+					fetchedAt: syncedAt,
+					skinLevelIdsJson: skinLevelIds,
+					chromaIdsJson: chromaIds,
+					buddyCount,
+					parserVersion: 1
+				});
+				await pruneSnapshots('inventory_snapshots', accountId, INVENTORY_SNAPSHOT_KEEP);
+			}
+
+			// Archive expansion (extra history pages & queues) stays behind the explicit Deep
+			// History action; a normal refresh only reads the first windows already fetched.
+			const extraPagesPromises: Array<Promise<unknown>> = [];
+			if (opts.deepHistory) {
+				const maxGeneralIndex = 100;
+				const maxCompIndex = 80;
+				if (
+					matchesRes.status === 'fulfilled' &&
+					matchesRes.value.Total > matchesRes.value.EndIndex
+				) {
+					const total = Math.min(matchesRes.value.Total, maxGeneralIndex);
+					for (let start = matchesRes.value.EndIndex; start < total; start += 20) {
+						extraPagesPromises.push(
+							fetchMatchHistory(ctx, { startIndex: start, endIndex: Math.min(start + 20, total) })
+						);
+					}
+				}
+				if (
+					compMatchesRes.status === 'fulfilled' &&
+					compMatchesRes.value.Total > compMatchesRes.value.EndIndex
+				) {
+					const totalComp = Math.min(compMatchesRes.value.Total, maxCompIndex);
+					for (let start = compMatchesRes.value.EndIndex; start < totalComp; start += 20) {
+						extraPagesPromises.push(
+							fetchMatchHistory(ctx, {
+								startIndex: start,
+								endIndex: Math.min(start + 20, totalComp),
+								queue: 'competitive'
+							})
+						);
+					}
+				}
+				for (const q of ['unrated', 'deathmatch', 'swiftplay']) {
+					extraPagesPromises.push(
+						fetchMatchHistory(ctx, { startIndex: 0, endIndex: 20, queue: q })
+					);
+				}
+				if (compUpdatesRes.status === 'fulfilled' && compUpdatesRes.value.Matches.length >= 15) {
+					extraPagesPromises.push(
+						fetchCompetitiveUpdates(ctx, { startIndex: 20, endIndex: 40, queue: 'competitive' }),
+						fetchCompetitiveUpdates(ctx, { startIndex: 40, endIndex: 60, queue: 'competitive' })
+					);
+				}
+			} else if (
+				compUpdatesRes.status === 'fulfilled' &&
+				compUpdatesRes.value.Matches.length >= 15 &&
+				withinBudget()
+			) {
+				extraPagesPromises.push(
+					fetchCompetitiveUpdates(ctx, { startIndex: 20, endIndex: 40, queue: 'competitive' })
+				);
+			}
+
+			const extraPagesSettled =
+				extraPagesPromises.length > 0 ? await Promise.allSettled(extraPagesPromises) : [];
+
+			const rrDeltaByMatchId = new Map<string, number>();
+			const orderedMatchIds: string[] = [];
+			const seenMatchIds = new Set<string>();
+			const pushMatchId = (id: string | undefined) => {
+				const trimmed = id?.trim();
+				if (!trimmed) return;
+				const lower = trimmed.toLowerCase();
+				if (seenMatchIds.has(lower)) return;
+				seenMatchIds.add(lower);
+				orderedMatchIds.push(trimmed);
+			};
+
+			if (matchesRes.status === 'fulfilled') {
+				for (const h of matchesRes.value.History) pushMatchId(h.MatchID);
+			}
+			if (compMatchesRes.status === 'fulfilled') {
+				for (const h of compMatchesRes.value.History) pushMatchId(h.MatchID);
+			}
+			if (compUpdatesRes.status === 'fulfilled') {
+				for (const u of compUpdatesRes.value.Matches) {
+					pushMatchId(u.MatchID);
+					if (typeof u.RankedRatingEarned === 'number') {
+						rrDeltaByMatchId.set(u.MatchID.toLowerCase(), u.RankedRatingEarned);
+					}
+				}
+			}
+			for (const res of extraPagesSettled) {
+				if (res.status !== 'fulfilled' || !res.value || typeof res.value !== 'object') continue;
+				const val = res.value as {
+					History?: Array<{ MatchID: string }>;
+					Matches?: Array<{ MatchID: string; RankedRatingEarned?: number }>;
+				};
+				for (const h of val.History ?? []) pushMatchId(h.MatchID);
+				for (const u of val.Matches ?? []) {
+					pushMatchId(u.MatchID);
+					if (typeof u.RankedRatingEarned === 'number') {
+						rrDeltaByMatchId.set(u.MatchID.toLowerCase(), u.RankedRatingEarned);
+					}
+				}
+			}
+
+			// Reuse previously indexed match records so we only fetch details for new matches
+			let existingMatches: StoredMatchRecord[] = [];
+			let prevCareer: StoredCareerProfile | null = null;
+			if (prevTrackerRows.status === 'fulfilled') {
+				for (const row of [...prevTrackerRows.value].reverse()) {
+					const rowMatches = (row.matchesJson as StoredMatchRecord[]) ?? [];
+					existingMatches = mergeStoredMatches(existingMatches, rowMatches, rrDeltaByMatchId);
+				}
+				prevCareer = (prevTrackerRows.value[0]?.profileJson as StoredCareerProfile) ?? null;
+			}
+			const existingById = new Map(existingMatches.map((m) => [m.matchId.toLowerCase(), m]));
+
+			// Always fetch the newest match (for fresh playerCard/title) + any unindexed match IDs (bounded)
+			const newestMatchId = orderedMatchIds[0];
+			const missingMatchIds = orderedMatchIds.filter(
+				(id, idx) => idx === 0 || !existingById.has(id.toLowerCase())
 			);
-		}
+			const idsToFetch = missingMatchIds.slice(0, opts.deepHistory ? 35 : 16);
 
-		const missingNamePuuids = collectMissingNamePuuids(rawMatchPayloads);
-		if (!account.gameName.trim() || account.gameName === 'Unknown') {
-			missingNamePuuids.push(account.puuid.toLowerCase());
-		}
-		const resolvedNamesByPuuid = await fetchPlayerNames(ctx, missingNamePuuids);
-		if (
-			!resolvedNamesByPuuid.has(account.puuid.toLowerCase()) &&
-			account.gameName.trim() &&
-			account.gameName !== 'Unknown'
-		) {
-			resolvedNamesByPuuid.set(account.puuid.toLowerCase(), {
-				gameName: account.gameName.trim(),
-				tagLine: account.tagLine.trim()
+			// ponytail: batch size 8 keeps Riot PD concurrency safe without a queue dependency
+			const rawMatchPayloads: unknown[] = [];
+			let latestMatchRaw: unknown | null = null;
+			const BATCH_SIZE = 8;
+			for (let i = 0; i < idsToFetch.length && withinBudget(); i += BATCH_SIZE) {
+				const batch = idsToFetch.slice(i, i + BATCH_SIZE);
+				const settled = await Promise.allSettled(batch.map((id) => fetchMatchDetailsRaw(ctx, id)));
+				settled.forEach((r, idx) => {
+					if (r.status === 'fulfilled') {
+						rawMatchPayloads.push(r.value);
+						if (newestMatchId && batch[idx]?.toLowerCase() === newestMatchId.toLowerCase()) {
+							latestMatchRaw = r.value;
+						}
+					}
+				});
+			}
+
+			const careerProfile = extractCareerProfile({
+				rawXp: xpRes.status === 'fulfilled' ? xpRes.value : null,
+				rawMmr: mmrRes.status === 'fulfilled' ? mmrRes.value : null,
+				latestMatchRaw: latestMatchRaw ?? rawMatchPayloads[0] ?? null,
+				ownerPuuid: account.puuid,
+				seasonsById: assets.seasonsById
 			});
-		}
+			if (!careerProfile.playerCardId && prevCareer?.playerCardId) {
+				careerProfile.playerCardId = prevCareer.playerCardId;
+			}
+			if (!careerProfile.playerTitleId && prevCareer?.playerTitleId) {
+				careerProfile.playerTitleId = prevCareer.playerTitleId;
+			}
+			if (careerProfile.accountLevel === null && prevCareer?.accountLevel !== null) {
+				careerProfile.accountLevel = prevCareer?.accountLevel ?? null;
+			}
+			if (
+				careerProfile.lastRankedMatchId &&
+				typeof careerProfile.lastRrDelta === 'number' &&
+				!rrDeltaByMatchId.has(careerProfile.lastRankedMatchId.toLowerCase())
+			) {
+				rrDeltaByMatchId.set(
+					careerProfile.lastRankedMatchId.toLowerCase(),
+					careerProfile.lastRrDelta
+				);
+			}
 
-		const newlyParsedMatches: StoredMatchRecord[] = rawMatchPayloads
-			.map((raw) =>
-				parseDetailedMatch(
-					raw,
-					account.puuid,
-					{
-						matchId: careerProfile.lastRankedMatchId,
-						rrDelta: careerProfile.lastRrDelta
-					},
-					resolvedNamesByPuuid,
-					rrDeltaByMatchId
+			const missingNamePuuids = collectMissingNamePuuids(rawMatchPayloads);
+			if (!account.gameName.trim() || account.gameName === 'Unknown') {
+				missingNamePuuids.push(account.puuid.toLowerCase());
+			}
+			const resolvedNamesByPuuid = await fetchPlayerNames(ctx, missingNamePuuids);
+			if (
+				!resolvedNamesByPuuid.has(account.puuid.toLowerCase()) &&
+				account.gameName.trim() &&
+				account.gameName !== 'Unknown'
+			) {
+				resolvedNamesByPuuid.set(account.puuid.toLowerCase(), {
+					gameName: account.gameName.trim(),
+					tagLine: account.tagLine.trim()
+				});
+			}
+
+			const newlyParsedMatches: StoredMatchRecord[] = rawMatchPayloads
+				.map((raw) =>
+					parseDetailedMatch(
+						raw,
+						account.puuid,
+						{
+							matchId: careerProfile.lastRankedMatchId,
+							rrDelta: careerProfile.lastRrDelta
+						},
+						resolvedNamesByPuuid,
+						rrDeltaByMatchId
+					)
 				)
-			)
-			.filter((m): m is StoredMatchRecord => m !== null);
+				.filter((m): m is StoredMatchRecord => m !== null);
 
-		const mergedMatches = mergeStoredMatches(existingMatches, newlyParsedMatches, rrDeltaByMatchId);
+			const mergedMatches = mergeStoredMatches(
+				existingMatches,
+				newlyParsedMatches,
+				rrDeltaByMatchId
+			);
 
-		await db.insert(schema.trackerSnapshots).values({
-			linkedAccountId: accountId,
-			fetchedAt: syncedAt,
-			profileJson: careerProfile,
-			matchesJson: mergedMatches,
-			parserVersion: 2
-		});
+			logPhase('match-details', {
+				requested: idsToFetch.length,
+				fetched: rawMatchPayloads.length,
+				merged: mergedMatches.length
+			});
 
-		if (henrikKey) {
-			await syncTrackerWithHenrikDev({ account, apiKey: henrikKey, hydrateScoreboardLimit: 12 });
+			const [trackerRow] = await db
+				.insert(schema.trackerSnapshots)
+				.values({
+					linkedAccountId: accountId,
+					fetchedAt: syncedAt,
+					profileJson: careerProfile,
+					matchesJson: mergedMatches,
+					parserVersion: 2
+				})
+				.returning({ id: schema.trackerSnapshots.id });
+			if (trackerRow) {
+				await pruneSnapshots('tracker_snapshots', accountId, 1);
+			}
+
+			// One effective history source per refresh: HenrikDev archive only fills in when the
+			// Riot pipeline produced nothing; deep history runs HenrikDev first (and returns early).
+			if (henrikKey && mergedMatches.length === 0 && withinBudget()) {
+				const ok = await syncTrackerWithHenrikDev({
+					account,
+					apiKey: henrikKey,
+					hydrateScoreboardLimit: 12,
+					deadlineAt
+				});
+				logPhase('henrik-backfill', { ok });
+			}
+
+			const finishedAt = new Date();
+			const refreshedOwnerIdentity = resolvedNamesByPuuid.get(account.puuid.toLowerCase());
+			await db
+				.update(schema.linkedAccounts)
+				.set({
+					...(refreshedOwnerIdentity?.gameName
+						? {
+								gameName: refreshedOwnerIdentity.gameName,
+								tagLine: refreshedOwnerIdentity.tagLine || account.tagLine
+							}
+						: {}),
+					connectionStatus: 'connected',
+					lastSyncedAt: finishedAt,
+					updatedAt: finishedAt
+				})
+				.where(eq(schema.linkedAccounts.id, accountId));
+
+			return { ok: true };
+		} catch (err) {
+			logPhase('failed', { error: safeErrorMessage(err) });
+			return { ok: false, error: safeErrorMessage(err) };
 		}
-
-		const refreshedOwnerIdentity = resolvedNamesByPuuid.get(account.puuid.toLowerCase());
+	} finally {
+		// Ownership-safe release: only the holder of this lease clears it.
 		await db
 			.update(schema.linkedAccounts)
-			.set({
-				...(refreshedOwnerIdentity?.gameName
-					? {
-							gameName: refreshedOwnerIdentity.gameName,
-							tagLine: refreshedOwnerIdentity.tagLine || account.tagLine
-						}
-					: {}),
-				connectionStatus: 'connected',
-				lastSyncedAt: syncedAt,
-				updatedAt: syncedAt
-			})
-			.where(eq(schema.linkedAccounts.id, accountId));
-
-		return { ok: true };
-	} catch (err) {
-		return { ok: false, error: safeErrorMessage(err) };
+			.set({ syncLockedUntil: null })
+			.where(
+				and(
+					eq(schema.linkedAccounts.id, accountId),
+					eq(schema.linkedAccounts.syncLockedUntil, leaseUntil)
+				)
+			)
+			.catch(() => {});
 	}
 }
 
@@ -857,7 +1004,9 @@ export interface HydratedSkinLevelItem {
 	displayName: string;
 	effectLabel: string;
 	displayIcon: string | null;
-	streamedVideo: string | null;
+	/** Full detail only: omitted from list payloads, served by /api/valorant/skin-inspector. */
+	streamedVideo?: string | null;
+	hasVideo?: boolean;
 	unlocked: boolean;
 }
 
@@ -866,7 +1015,9 @@ export interface HydratedChromaItem {
 	name: string;
 	swatch: string | null;
 	render: string | null;
-	streamedVideo: string | null;
+	/** Full detail only: omitted from list payloads, served by /api/valorant/skin-inspector. */
+	streamedVideo?: string | null;
+	hasVideo?: boolean;
 	unlocked: boolean;
 }
 
@@ -954,7 +1105,8 @@ export interface HydratedProfileBanner {
 export async function loadDashboardView(
 	userId: string,
 	displayCurrency: SupportedCurrency,
-	selectedAccountId?: string
+	selectedAccountId?: string,
+	opts: { fullSkinDetail?: boolean } = {}
 ) {
 	const db = getDb();
 	const accounts = await db
@@ -967,51 +1119,73 @@ export async function loadDashboardView(
 			shard: schema.linkedAccounts.shard,
 			authMode: schema.linkedAccounts.authMode,
 			connectionStatus: schema.linkedAccounts.connectionStatus,
-			lastSyncedAt: schema.linkedAccounts.lastSyncedAt
+			lastSyncedAt: schema.linkedAccounts.lastSyncedAt,
+			shareToken: schema.sharedProfiles.token,
+			sharePublishedAt: schema.sharedProfiles.publishedAt
 		})
 		.from(schema.linkedAccounts)
+		.leftJoin(
+			schema.sharedProfiles,
+			eq(schema.sharedProfiles.linkedAccountId, schema.linkedAccounts.id)
+		)
 		.where(eq(schema.linkedAccounts.userId, userId))
 		.orderBy(desc(schema.linkedAccounts.updatedAt));
 
 	const activeAccount = accounts.find((a) => a.id === selectedAccountId) ?? accounts[0] ?? null;
-
-	const [assets, fxRate] = await Promise.all([
-		getValorantAssetIndex(),
-		displayCurrency === 'USD' ? getIdrToUsdFxRate() : Promise.resolve(null)
-	]);
 
 	if (!activeAccount) {
 		return {
 			accounts: [],
 			activeAccount: null,
 			profile: null,
-			currencyIcons: assets.currencyIcons,
+			currencyIcons: CURRENCY_ICONS,
 			store: null,
 			inventory: null,
-			tracker: null
+			tracker: null,
+			share: null
 		};
 	}
 
-	const [latestStoreRows, latestInvRows, latestTrackerRows] = await Promise.all([
+	// Metadata and FX never gate the snapshot reads: they resolve in parallel, and the
+	// durable app_state copies keep a cold process off the public catalog's critical path.
+	const assetsPromise = getValorantAssetIndex().catch(() => EMPTY_ASSET_INDEX);
+	const fxPromise = displayCurrency === 'USD' ? getIdrToUsdFxRate() : Promise.resolve(null);
+
+	const [latestStoreRows, latestInvRows, latestTrackerRows] = await db.batch([
 		db
-			.select()
+			.select({
+				fetchedAt: schema.storeSnapshots.fetchedAt,
+				offersJson: schema.storeSnapshots.offersJson,
+				walletJson: schema.storeSnapshots.walletJson
+			})
 			.from(schema.storeSnapshots)
 			.where(eq(schema.storeSnapshots.linkedAccountId, activeAccount.id))
 			.orderBy(desc(schema.storeSnapshots.fetchedAt))
 			.limit(5),
 		db
-			.select()
+			.select({
+				fetchedAt: schema.inventorySnapshots.fetchedAt,
+				skinLevelIdsJson: schema.inventorySnapshots.skinLevelIdsJson,
+				chromaIdsJson: schema.inventorySnapshots.chromaIdsJson,
+				buddyCount: schema.inventorySnapshots.buddyCount
+			})
 			.from(schema.inventorySnapshots)
 			.where(eq(schema.inventorySnapshots.linkedAccountId, activeAccount.id))
 			.orderBy(desc(schema.inventorySnapshots.fetchedAt))
 			.limit(1),
 		db
-			.select()
+			.select({
+				fetchedAt: schema.trackerSnapshots.fetchedAt,
+				profileJson: schema.trackerSnapshots.profileJson,
+				matchesJson: schema.trackerSnapshots.matchesJson
+			})
 			.from(schema.trackerSnapshots)
 			.where(eq(schema.trackerSnapshots.linkedAccountId, activeAccount.id))
 			.orderBy(desc(schema.trackerSnapshots.fetchedAt))
 			.limit(5)
 	]);
+
+	const [assets, fxRate] = await Promise.all([assetsPromise, fxPromise]);
 
 	const estimateSingleVp = (vp: number | null): string | null => {
 		if (vp === null) return null;
@@ -1182,7 +1356,8 @@ export async function loadDashboardView(
 				displayName: l.displayName,
 				effectLabel: l.effectLabel,
 				displayIcon: l.displayIcon,
-				streamedVideo: l.streamedVideo,
+				streamedVideo: opts.fullSkinDetail ? l.streamedVideo : undefined,
+				hasVideo: Boolean(l.streamedVideo),
 				unlocked: ownedLevelSet.has(l.uuid)
 			}));
 
@@ -1191,7 +1366,8 @@ export async function loadDashboardView(
 				name: c.displayName,
 				swatch: c.swatch,
 				render: c.fullRender ?? c.displayIcon,
-				streamedVideo: c.streamedVideo,
+				streamedVideo: opts.fullSkinDetail ? c.streamedVideo : undefined,
+				hasVideo: Boolean(c.streamedVideo),
 				unlocked: idx === 0 || ownedChromaSet.has(c.uuid)
 			}));
 
@@ -1262,6 +1438,14 @@ export async function loadDashboardView(
 		hasFullActHistory: boolean;
 		acts: HydratedActOption[];
 		matches: HydratedMatchItem[];
+		totalMatches: number;
+		stats: ReturnType<typeof summarizeMatchStats>;
+		scopeStats: ReturnType<typeof summarizeTrackerScopes>;
+		queueTotals: Record<
+			'competitive' | 'unrated' | 'deathmatch' | 'swiftplay' | 'other' | 'all',
+			number
+		>;
+		seasonCounts: Record<string, Record<string, number>>;
 	} | null = null;
 
 	if (latestTrackerRows[0]) {
@@ -1272,11 +1456,16 @@ export async function loadDashboardView(
 			const rowMatches = (row.matchesJson as StoredMatchRecord[]) ?? [];
 			storedMatches = mergeStoredMatches(storedMatches, rowMatches);
 		}
-		const hydratedMatches = hydrateMatchesWithAssets(storedMatches, assets, {
-			puuid: activeAccount.puuid,
-			gameName: activeAccount.gameName,
-			tagLine: activeAccount.tagLine
-		});
+		// The dashboard ships a bounded page; filter counts and stats still cover the full set.
+		const hydratedMatches = hydrateMatchesWithAssets(
+			storedMatches.slice(0, TRACKER_MATCH_PAGE_SIZE),
+			assets,
+			{
+				puuid: activeAccount.puuid,
+				gameName: activeAccount.gameName,
+				tagLine: activeAccount.tagLine
+			}
+		).map((m) => ({ ...m, scoreboard: [] }));
 
 		const [cardMeta, titleText] = await Promise.all([
 			getPlayerCardMeta(career.playerCardId),
@@ -1338,7 +1527,7 @@ export async function loadDashboardView(
 
 		// Hydrate full competitive Act history for the Act Dropdown
 		const sampleCountBySeason = new Map<string, number>();
-		for (const m of hydratedMatches) {
+		for (const m of storedMatches) {
 			if (m.seasonId) {
 				sampleCountBySeason.set(m.seasonId, (sampleCountBySeason.get(m.seasonId) ?? 0) + 1);
 			}
@@ -1361,9 +1550,9 @@ export async function loadDashboardView(
 					games: career.actGames
 				});
 			}
-			for (const m of hydratedMatches) {
+			for (const m of storedMatches) {
 				if (m.seasonId && !fallbackActsMap.has(m.seasonId)) {
-					const seasonMatches = hydratedMatches.filter((x) => x.seasonId === m.seasonId);
+					const seasonMatches = storedMatches.filter((x) => x.seasonId === m.seasonId);
 					const wins = seasonMatches.filter((x) => x.outcome === 'win').length;
 					const maxTier = Math.max(0, ...seasonMatches.map((x) => x.competitiveTier));
 					fallbackActsMap.set(m.seasonId, {
@@ -1422,13 +1611,39 @@ export async function loadDashboardView(
 			};
 		});
 
+		// Server-derived totals so the client can label samples without loading every match.
+		const queueTotals = {
+			competitive: 0,
+			unrated: 0,
+			deathmatch: 0,
+			swiftplay: 0,
+			other: 0,
+			all: storedMatches.length
+		};
+		const seasonCounts: Record<string, Record<string, number>> = {};
+		for (const m of storedMatches) {
+			const bucket = trackerQueueBucket(m.queueId);
+			queueTotals[bucket] += 1;
+			const sid = m.seasonId;
+			if (!sid) continue;
+			for (const scope of [bucket, 'all'] as const) {
+				const scopeCounts = (seasonCounts[scope] ??= {});
+				scopeCounts[sid] = (scopeCounts[sid] ?? 0) + 1;
+			}
+		}
+
 		trackerView = {
 			fetchedAt: tRow.fetchedAt.toISOString(),
 			latestSeasonId: career.latestSeasonId?.toLowerCase() ?? null,
 			latestSeasonLabel: curSeasonMeta?.fullLabel ?? 'Current Act',
 			hasFullActHistory,
 			acts,
-			matches: hydratedMatches
+			matches: hydratedMatches,
+			totalMatches: storedMatches.length,
+			stats: summarizeMatchStats(storedMatches),
+			scopeStats: summarizeTrackerScopes(storedMatches),
+			queueTotals,
+			seasonCounts
 		};
 	}
 
@@ -1458,6 +1673,131 @@ export async function loadDashboardView(
 		currencyIcons: assets.currencyIcons,
 		store: storeView,
 		inventory: inventoryView,
-		tracker: trackerView
+		tracker: trackerView,
+		share: activeAccount.shareToken
+			? {
+					path: `/share/${activeAccount.shareToken}`,
+					publishedAt: activeAccount.sharePublishedAt?.toISOString() ?? null
+				}
+			: null
+	};
+}
+
+async function getOwnedAccount(userId: string, accountId: string) {
+	const rows = await getDb()
+		.select()
+		.from(schema.linkedAccounts)
+		.where(and(eq(schema.linkedAccounts.id, accountId), eq(schema.linkedAccounts.userId, userId)))
+		.limit(1);
+	return rows[0] ?? null;
+}
+
+async function loadStoredTrackerMatches(accountId: string): Promise<StoredMatchRecord[]> {
+	const rows = await getDb()
+		.select({ matchesJson: schema.trackerSnapshots.matchesJson })
+		.from(schema.trackerSnapshots)
+		.where(eq(schema.trackerSnapshots.linkedAccountId, accountId))
+		.orderBy(desc(schema.trackerSnapshots.fetchedAt))
+		.limit(5);
+	let stored: StoredMatchRecord[] = [];
+	for (const row of [...rows].reverse()) {
+		stored = mergeStoredMatches(stored, (row.matchesJson as StoredMatchRecord[]) ?? []);
+	}
+	return stored;
+}
+
+function toListMatch(m: HydratedMatchItem): HydratedMatchItem {
+	return { ...m, scoreboard: [] };
+}
+
+/** Owner-checked paginated match page (scoreboards stripped; fetch them per-match on expand). */
+export async function loadTrackerMatchesPage(
+	userId: string,
+	accountId: string,
+	offset: number,
+	limit: number
+): Promise<{ matches: HydratedMatchItem[]; total: number } | null> {
+	const account = await getOwnedAccount(userId, accountId);
+	if (!account) return null;
+	const stored = await loadStoredTrackerMatches(accountId);
+	const safeLimit = Math.min(Math.max(1, limit), 100);
+	const slice = stored.slice(Math.max(0, offset), Math.max(0, offset) + safeLimit);
+	if (slice.length === 0) return { matches: [], total: stored.length };
+	const assets = await getValorantAssetIndex().catch(() => EMPTY_ASSET_INDEX);
+	const hydrated = hydrateMatchesWithAssets(slice, assets, {
+		puuid: account.puuid,
+		gameName: account.gameName,
+		tagLine: account.tagLine
+	}).map(toListMatch);
+	return { matches: hydrated, total: stored.length };
+}
+
+/** Owner-checked single-match scoreboard for the expand-on-demand drawer. */
+export async function loadMatchScoreboard(
+	userId: string,
+	accountId: string,
+	matchId: string
+): Promise<HydratedMatchItem['scoreboard'] | null> {
+	const account = await getOwnedAccount(userId, accountId);
+	if (!account) return null;
+	const stored = await loadStoredTrackerMatches(accountId);
+	const found = stored.find((m) => m.matchId.toLowerCase() === matchId.toLowerCase());
+	if (!found || found.scoreboard.length === 0) return null;
+	const assets = await getValorantAssetIndex().catch(() => EMPTY_ASSET_INDEX);
+	const hydrated = hydrateMatchesWithAssets([found], assets, {
+		puuid: account.puuid,
+		gameName: account.gameName,
+		tagLine: account.tagLine
+	});
+	return hydrated[0]?.scoreboard ?? null;
+}
+
+/** Owner-checked full level/chroma detail for the skin inspector modal. */
+export async function loadSkinInspectorDetail(
+	userId: string,
+	accountId: string,
+	skinUuid: string
+): Promise<{ levels: HydratedSkinLevelItem[]; chromas: HydratedChromaItem[] } | null> {
+	const account = await getOwnedAccount(userId, accountId);
+	if (!account) return null;
+	const [invRow, assets] = await Promise.all([
+		getDb()
+			.select({
+				skinLevelIdsJson: schema.inventorySnapshots.skinLevelIdsJson,
+				chromaIdsJson: schema.inventorySnapshots.chromaIdsJson
+			})
+			.from(schema.inventorySnapshots)
+			.where(eq(schema.inventorySnapshots.linkedAccountId, accountId))
+			.orderBy(desc(schema.inventorySnapshots.fetchedAt))
+			.limit(1),
+		getValorantAssetIndex().catch(() => EMPTY_ASSET_INDEX)
+	]);
+	const meta = assets.bySkinUuid.get(skinUuid.toLowerCase());
+	if (!invRow[0] || !meta) return null;
+	const ownedLevels = new Set(
+		(invRow[0].skinLevelIdsJson as string[]).map((id) => id.toLowerCase())
+	);
+	const ownedChromas = new Set((invRow[0].chromaIdsJson as string[]).map((id) => id.toLowerCase()));
+	if (!meta.levelIds.some((id) => ownedLevels.has(id))) return null;
+	return {
+		levels: meta.levels.map((l) => ({
+			uuid: l.uuid,
+			levelNumber: l.levelNumber,
+			displayName: l.displayName,
+			effectLabel: l.effectLabel,
+			displayIcon: l.displayIcon,
+			streamedVideo: l.streamedVideo,
+			hasVideo: Boolean(l.streamedVideo),
+			unlocked: ownedLevels.has(l.uuid)
+		})),
+		chromas: meta.chromas.map((c, idx) => ({
+			uuid: c.uuid,
+			name: c.displayName,
+			swatch: c.swatch,
+			render: c.fullRender ?? c.displayIcon,
+			streamedVideo: c.streamedVideo,
+			hasVideo: Boolean(c.streamedVideo),
+			unlocked: idx === 0 || ownedChromas.has(c.uuid)
+		}))
 	};
 }

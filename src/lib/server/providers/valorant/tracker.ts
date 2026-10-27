@@ -1005,7 +1005,143 @@ export function extractHenrikCareerProfile(params: {
 	};
 }
 
+/**
+ * Filter buckets used by the tracker UI: `unrated` covers Riot's `standard` queue id,
+ * everything outside the four named queues lands in `other` (still counted under `all`).
+ */
+export function trackerQueueBucket(
+	queueId: string
+): 'competitive' | 'unrated' | 'deathmatch' | 'swiftplay' | 'other' {
+	switch (queueId) {
+		case 'competitive':
+			return 'competitive';
+		case 'unrated':
+		case 'standard':
+			return 'unrated';
+		case 'deathmatch':
+			return 'deathmatch';
+		case 'swiftplay':
+			return 'swiftplay';
+		default:
+			return 'other';
+	}
+}
+
+const TRACKER_SUM_FIELDS = [
+	'kills',
+	'deaths',
+	'assists',
+	'score',
+	'damageDealt',
+	'damageReceived',
+	'headshots',
+	'bodyshots',
+	'legshots',
+	'kastRounds',
+	'firstBloods',
+	'flawlessRounds',
+	'aces',
+	'durationSeconds'
+] as const;
+
+export type TrackerScopeStats = Record<(typeof TRACKER_SUM_FIELDS)[number], number> & {
+	count: number;
+	wins: number;
+	losses: number;
+	draws: number;
+	rounds: number;
+};
+
+export function summarizeTrackerScopes(matches: StoredMatchRecord[]) {
+	const scopes: Record<string, Record<string, TrackerScopeStats>> = {};
+	for (const match of matches) {
+		const bucket = trackerQueueBucket(match.queueId);
+		for (const queue of [bucket, 'all']) {
+			for (const season of match.seasonId ? ['all', match.seasonId] : ['all']) {
+				const group = (scopes[queue] ??= {});
+				const stats = (group[season] ??= {
+					count: 0,
+					wins: 0,
+					losses: 0,
+					draws: 0,
+					rounds: 0,
+					kills: 0,
+					deaths: 0,
+					assists: 0,
+					score: 0,
+					damageDealt: 0,
+					damageReceived: 0,
+					headshots: 0,
+					bodyshots: 0,
+					legshots: 0,
+					kastRounds: 0,
+					firstBloods: 0,
+					flawlessRounds: 0,
+					aces: 0,
+					durationSeconds: 0
+				});
+				stats.count++;
+				if (match.outcome === 'win') stats.wins++;
+				else if (match.outcome === 'loss') stats.losses++;
+				else stats.draws++;
+				stats.rounds += Math.max(1, match.roundsPlayed);
+				for (const field of TRACKER_SUM_FIELDS) stats[field] += match[field];
+			}
+		}
+	}
+	return scopes;
+}
+
+/**
+ * Aggregate headline stats over a stored match sample. Used for the published shared
+ * profile and the tracker's server-side summaries; stays valid for empty samples.
+ */
+export function summarizeMatchStats(matches: StoredMatchRecord[]) {
+	const sum = matches.reduce(
+		(total, match) => ({
+			kills: total.kills + match.kills,
+			deaths: total.deaths + match.deaths,
+			assists: total.assists + match.assists,
+			rounds: total.rounds + Math.max(1, match.roundsPlayed),
+			score: total.score + match.score,
+			damage: total.damage + match.damageDealt,
+			headshots: total.headshots + match.headshots,
+			hits: total.hits + match.headshots + match.bodyshots + match.legshots,
+			kastRounds: total.kastRounds + match.kastRounds
+		}),
+		{
+			kills: 0,
+			deaths: 0,
+			assists: 0,
+			rounds: 0,
+			score: 0,
+			damage: 0,
+			headshots: 0,
+			hits: 0,
+			kastRounds: 0
+		}
+	);
+	const wins = matches.filter((match) => match.outcome === 'win').length;
+	const losses = matches.filter((match) => match.outcome === 'loss').length;
+	return {
+		sampleCount: matches.length,
+		wins,
+		losses,
+		draws: matches.length - wins - losses,
+		kills: sum.kills,
+		deaths: sum.deaths,
+		assists: sum.assists,
+		killDeathRatio: sum.kills / Math.max(1, sum.deaths),
+		winPercent: (100 * wins) / Math.max(1, wins + losses),
+		averageCombatScore: sum.score / Math.max(1, sum.rounds),
+		averageDamagePerRound: sum.damage / Math.max(1, sum.rounds),
+		headshotPercent: (100 * sum.headshots) / Math.max(1, sum.hits),
+		kastPercent: (100 * sum.kastRounds) / Math.max(1, sum.rounds)
+	};
+}
+
 export interface HydratedMatchItem extends Omit<StoredMatchRecord, 'scoreboard'> {
+	hasScoreboard: boolean;
 	mapName: string;
 	mapIcon: string | null;
 	mapSplash: string | null;
@@ -1051,6 +1187,7 @@ export function hydrateMatchesWithAssets(
 
 		return {
 			...m,
+			hasScoreboard: m.scoreboard.length > 0,
 			mapName: mapMeta?.displayName ?? 'Unknown Map',
 			mapIcon: mapMeta?.listViewIcon ?? null,
 			mapSplash: mapMeta?.splash ?? null,

@@ -26,9 +26,8 @@
 	import ProfileHero, { type ModuleKey } from '#lib/components/ProfileHero.svelte';
 	import ShopSection from '#lib/components/ShopSection.svelte';
 	import ShareProfileDialog from '#lib/components/ShareProfileDialog.svelte';
-	import SkinInspectorModal, {
-		type SkinInspectorPayload
-	} from '#lib/components/SkinInspectorModal.svelte';
+	import LazySkinInspector from '#lib/components/LazySkinInspector.svelte';
+	import type { SkinInspectorPayload } from '#lib/components/SkinInspectorModal.svelte';
 	import TrackerSection from '#lib/components/TrackerSection.svelte';
 	import type { PageProps } from './$types';
 
@@ -50,7 +49,25 @@
 	let showSecrets = $state(false);
 	let connecting = $state(false);
 	let optimisticCurrency = $state<'IDR' | 'USD' | null>(null);
-	let inspectorTarget = $state<SkinInspectorPayload | null>(null);
+	let inspectorTarget = $state.raw<SkinInspectorPayload | null>(null);
+
+	// The 3D inspector chunk loads lazily via LazySkinInspector; inventory skins fetch their
+	// full level/chroma detail (videos) from the owner-only endpoint only when inspected.
+	function openInspector(payload: SkinInspectorPayload) {
+		inspectorTarget = payload;
+		if (payload.mode === 'inventory' && payload.skinUuid && activeAccount) {
+			fetch(
+				`/api/valorant/skin-inspector?account=${encodeURIComponent(activeAccount.id)}&skin=${encodeURIComponent(payload.skinUuid)}`
+			)
+				.then((r) => (r.ok ? r.json() : Promise.reject()))
+				.then((detail) => {
+					if (inspectorTarget === payload) {
+						inspectorTarget = { ...payload, levels: detail.levels, chromas: detail.chromas };
+					}
+				})
+				.catch(() => {});
+		}
+	}
 	let shareAccountId = $state<string | null>(null);
 	let userMenuOpen = $state(false);
 	let showLogoutConfirm = $state(false);
@@ -887,7 +904,7 @@
 				onShare={() => (shareAccountId = activeAccount.id)}
 				syncError={form?.syncError ?? null}
 				ownedSkinCount={dashboard.inventory?.valuation.ownedBaseSkinCount ?? null}
-				matchSampleCount={dashboard.tracker?.matches.length ?? null}
+				matchSampleCount={dashboard.tracker?.totalMatches ?? null}
 				shopCountdown={dashboard.store ? formatCountdown(dashboard.store.dailyExpiresAt) : null}
 				relativeSyncText={formatRelativeSync(activeAccount.lastSyncedAt)}
 			/>
@@ -904,12 +921,14 @@
 				>
 					<!-- ==================== MODULE 1: TRACKER & COMPETITIVE OVERVIEW ==================== -->
 					{#if activeModule === 'tracker'}
-						<TrackerSection
-							ownerPuuid={activeAccount.puuid}
-							ownerAccount={activeAccount}
-							profile={dashboard.profile}
-							tracker={dashboard.tracker}
-						/>
+						{#key `${activeAccount.id}:${dashboard.tracker?.fetchedAt ?? ''}`}
+							<TrackerSection
+								ownerPuuid={activeAccount.puuid}
+								ownerAccount={activeAccount}
+								profile={dashboard.profile}
+								tracker={dashboard.tracker}
+							/>
+						{/key}
 
 						<!-- ==================== MODULE 2: DAILY STOREFRONT & NIGHT MARKET ==================== -->
 					{:else if activeModule === 'shop'}
@@ -919,7 +938,7 @@
 								vpIconUrl={dashboard.currencyIcons.vp}
 								shopCountdown={formatCountdown(dashboard.store.dailyExpiresAt)}
 								nightMarketCountdown={formatCountdown(dashboard.store.nightMarket.expiresAt)}
-								onInspectSkin={(payload) => (inspectorTarget = payload)}
+								onInspectSkin={openInspector}
 							/>
 						{:else}
 							<div class="glass-neu rounded-2xl p-6 text-xs text-slate-400">
@@ -934,7 +953,7 @@
 							<InventorySection
 								inventory={dashboard.inventory}
 								vpIconUrl={dashboard.currencyIcons.vp}
-								onInspectSkin={(payload) => (inspectorTarget = payload)}
+								onInspectSkin={openInspector}
 							/>
 						{:else}
 							<div class="glass-neu rounded-2xl p-6 text-xs text-slate-400">
@@ -955,14 +974,14 @@
 		{activeModule}
 		onSelectModule={selectModule}
 		ownedSkinCount={dashboard.inventory?.valuation.ownedBaseSkinCount ?? null}
-		matchSampleCount={dashboard.tracker?.matches.length ?? null}
+		matchSampleCount={dashboard.tracker?.totalMatches ?? null}
 		shopCountdown={dashboard.store ? formatCountdown(dashboard.store.dailyExpiresAt) : null}
 	/>
 {/if}
 
 <!-- Multi-Level & Variant Skin Inspector Modal -->
 {#if inspectorTarget}
-	<SkinInspectorModal target={inspectorTarget} onClose={() => (inspectorTarget = null)} />
+	<LazySkinInspector target={inspectorTarget} onClose={() => (inspectorTarget = null)} />
 {/if}
 
 {#if activeAccount && shareAccountId === activeAccount.id}

@@ -51,6 +51,8 @@
 	let invFilter = $state<InvFilter>('all');
 	let selectedTierKey = $state<TierFilterKey>(null);
 	let invSort = $state<InvSort>('price_desc');
+	let page = $state(1);
+	const PAGE_SIZE = 12;
 	let sortMenuOpen = $state(false);
 	let selectedChromaBySkin = $state<
 		Record<
@@ -252,6 +254,19 @@
 		});
 	});
 
+	const pageCount = $derived(Math.max(1, Math.ceil(filteredAndSortedSkins.length / PAGE_SIZE)));
+	const currentPage = $derived(Math.min(page, pageCount));
+	const visibleSkins = $derived(
+		filteredAndSortedSkins.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE)
+	);
+	$effect(() => {
+		invSearch;
+		invFilter;
+		selectedTierKey;
+		invSort;
+		page = 1;
+	});
+
 	const filterTabs: Array<{ id: InvFilter; label: string }> = [
 		{ id: 'all', label: 'All' },
 		{ id: 'store', label: 'Store' },
@@ -291,6 +306,7 @@
 			skinName: skin.displayName,
 			weaponName: skin.weaponName,
 			mode: 'inventory',
+			skinUuid: skin.skinUuid,
 			defaultIcon: skin.displayIcon,
 			levels: skin.levels,
 			chromas: skin.chromas,
@@ -727,11 +743,14 @@
 		</div>
 	{:else}
 		<div class="grid gap-4 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4">
-			{#each filteredAndSortedSkins as skin, idx (skin.skinUuid)}
+			{#each visibleSkins as skin, idx (skin.skinUuid)}
 				{@const activeChroma = selectedChromaBySkin[skin.skinUuid]}
 				{@const activeRender = activeChroma?.render ?? skin.chromas[0]?.render ?? skin.displayIcon}
-				<div in:fly={{ y: 12, duration: 240, delay: Math.min(idx * 24, 240), easing: cubicOut }}>
-					<RarityCardShell tier={skin.tier} class="h-full gap-3 p-4">
+				<div
+					style="--idle-float-delay: -{(idx % 5) * 0.7}s"
+					in:fly={{ y: 12, duration: 240, delay: Math.min(idx * 24, 240), easing: cubicOut }}
+				>
+					<RarityCardShell tier={skin.tier} class="inventory-card h-full gap-3 p-4">
 						{#snippet children(spec)}
 							<!-- Top Tier & Quick 360 / VFX Inspector Controls -->
 							<div class="relative z-10 flex items-center justify-between gap-2">
@@ -828,7 +847,7 @@
 									{/if}
 								</div>
 								<h3
-									class="mt-0.5 line-clamp-1 font-display text-sm font-bold text-white"
+									class="mt-1 line-clamp-1 font-display text-[15px] leading-snug font-bold text-white"
 									title={skin.displayName}
 								>
 									{skin.displayName}
@@ -837,9 +856,9 @@
 
 							<!-- Interactive Stars + Variant Swatches + BOTH VP Cost & Fiat Estimate -->
 							<div
-								class="neu-well-sm relative z-20 mt-auto flex flex-col gap-2 rounded-xl px-3 py-2.5"
+								class="relative z-20 mt-auto flex flex-col gap-2 border-t border-white/10 pt-2"
 							>
-								<div class="flex min-h-5 items-center justify-between gap-2">
+								<div class="flex min-h-7 flex-wrap items-center justify-between gap-2">
 									<StarLevelIndicator
 										levels={skin.levels}
 										mode="inventory"
@@ -854,7 +873,7 @@
 												};
 											}
 											openSkinModal(skin, {
-												initialView: lvl.streamedVideo ? 'video' : '360',
+												initialView: lvl.hasVideo || lvl.streamedVideo ? 'video' : '360',
 												initialLevelNumber: lvl.levelNumber
 											});
 										}}
@@ -862,7 +881,7 @@
 
 									<!-- Interactive Variant Swatches right on Inventory Card -->
 									{#if skin.chromas.length > 1}
-										<div class="flex items-center gap-1">
+										<div class="flex items-center">
 											{#each skin.chromas as chroma (chroma.uuid)}
 												{#if chroma.swatch && chroma.render}
 													<button
@@ -875,17 +894,20 @@
 																chromaUuid: chroma.uuid
 															})}
 														title="{chroma.name} ({chroma.unlocked ? 'Owned' : 'Locked'})"
-														class="relative h-4 w-4 cursor-pointer overflow-hidden rounded-sm border transition {activeRender ===
+														class="relative flex h-6 w-6 cursor-pointer items-center justify-center rounded-md transition focus-visible:ring-2 focus-visible:ring-neu-cyan {activeRender ===
 														chroma.render
-															? 'scale-115 border-white shadow-[0_0_6px_rgba(255,255,255,0.45)]'
+															? 'opacity-100'
 															: chroma.unlocked
-																? 'border-white/30 opacity-90 hover:opacity-100'
-																: 'border-dashed border-white/20 opacity-40 hover:opacity-85'}"
+																? 'opacity-80 hover:opacity-100'
+																: 'opacity-40 hover:opacity-85'}"
 													>
 														<img
 															src={chroma.swatch}
 															alt={chroma.name}
-															class="h-full w-full object-cover"
+															class="h-4 w-4 rounded-sm border object-cover {activeRender ===
+															chroma.render
+																? 'border-white ring-1 ring-white/60'
+																: 'border-white/30'}"
 														/>
 													</button>
 												{/if}
@@ -947,5 +969,27 @@
 				</div>
 			{/each}
 		</div>
+		{#if pageCount > 1}
+			<nav
+				aria-label="Collection pagination"
+				class="flex flex-wrap items-center justify-center gap-3 pt-4"
+			>
+				<button
+					type="button"
+					class="neu-btn min-h-11 rounded-xl px-4 text-sm disabled:opacity-40"
+					disabled={currentPage === 1}
+					onclick={() => (page = currentPage - 1)}>Previous</button
+				>
+				<span class="text-sm text-slate-300" aria-live="polite"
+					>Page {currentPage} of {pageCount} · {filteredAndSortedSkins.length} skins</span
+				>
+				<button
+					type="button"
+					class="neu-btn min-h-11 rounded-xl px-4 text-sm disabled:opacity-40"
+					disabled={currentPage === pageCount}
+					onclick={() => (page = currentPage + 1)}>Next</button
+				>
+			</nav>
+		{/if}
 	{/if}
 </section>

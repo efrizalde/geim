@@ -13,6 +13,15 @@
 	let { tier, class: className = '', children }: Props = $props();
 
 	let cardEl = $state<HTMLElement | null>(null);
+	let active = $state(false);
+	let reducedMotion = $state(false);
+	$effect(() => {
+		const media = window.matchMedia('(prefers-reduced-motion: reduce)');
+		const update = () => (reducedMotion = media.matches);
+		update();
+		media.addEventListener('change', update);
+		return () => media.removeEventListener('change', update);
+	});
 
 	const spec = $derived(resolveRaritySpec(tier));
 
@@ -33,13 +42,12 @@
 	$effect(() => {
 		const el = cardEl;
 		const currentSpec = spec;
-		if (!el || typeof window === 'undefined') return;
+		if (!el || !active || typeof window === 'undefined') return;
 
-		const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-		if (prefersReduced || currentSpec.rank === 0) return;
+		if (reducedMotion || currentSpec.rank === 0) return;
 
 		const tweens: gsap.core.Tween[] = [];
-		const phaseOffset = ((el.offsetLeft + el.offsetTop) % 5) * 0.28;
+		const phaseOffset = 0;
 
 		const ctx = gsap.context(() => {
 			const auras = gsap.utils.toArray<HTMLElement>('[data-rarity-aura]');
@@ -181,7 +189,7 @@
 	$effect(() => {
 		const el = cardEl;
 		if (!el || typeof window === 'undefined') return;
-		if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+		if (reducedMotion) return;
 
 		gsap.set(el, { transformPerspective: 960 });
 		quickRotX = gsap.quickTo(el, 'rotationX', { duration: 0.35, ease: 'power3.out' });
@@ -226,8 +234,18 @@
 <article
 	bind:this={cardEl}
 	data-rarity={spec.key}
+	onpointerenter={(event) => {
+		if (event.pointerType !== 'touch') active = true;
+	}}
+	onfocusin={() => (active = true)}
+	onfocusout={(event) => {
+		if (!event.currentTarget.contains(event.relatedTarget as Node | null)) active = false;
+	}}
 	onpointermove={handlePointerMove}
-	onpointerleave={handlePointerLeave}
+	onpointerleave={(event) => {
+		if (!event.currentTarget.contains(document.activeElement)) active = false;
+		handlePointerLeave();
+	}}
 	class="glass-card rarity-card group relative flex flex-col justify-between rounded-2xl {className}"
 	style="border-color: {spec.borderBaseRgba};"
 >
@@ -245,13 +263,14 @@
 			<div
 				data-rarity-aura
 				class="absolute -inset-6 rounded-3xl"
-				style="background: radial-gradient(circle at 50% 0%, {spec.glowRgba} 0%, transparent 62%), radial-gradient(circle at 50% 100%, {spec.glowRgba} 0%, transparent 68%);"
+				style="opacity: 0.45; background: radial-gradient(circle at 50% 0%, {spec.glowRgba} 0%, transparent 62%), radial-gradient(circle at 50% 100%, {spec.glowRgba} 0%, transparent 68%);"
 			></div>
 		{/if}
 
 		<!-- Animated Rotating Conic Energy Border (Tier 3 Premium, Tier 4 Exclusive, Tier 5 Ultra) -->
 		{#if spec.hasAnimatedBorder}
 			<div
+				style="--idle-border-low: {spec.rank === 5 ? 0.62 : spec.rank === 4 ? 0.5 : 0.35}; --idle-border-high: {spec.rank === 5 ? 0.85 : spec.rank === 4 ? 0.7 : 0.5};"
 				class="rarity-conic-mask absolute inset-0 rounded-2xl transition-opacity duration-300 {spec.rank ===
 				5
 					? 'opacity-85 group-hover:opacity-100'

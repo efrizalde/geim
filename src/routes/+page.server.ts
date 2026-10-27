@@ -2,7 +2,7 @@ import { fail, redirect } from '@sveltejs/kit';
 import { eq } from 'drizzle-orm';
 import { clearSessionCookie, invalidateAppSession } from '#lib/server/auth/session.js';
 import { getDb, schema } from '#lib/server/db/index.js';
-import { getProfileShare, publishSharedProfile } from '#lib/server/sharing.js';
+import { publishSharedProfile } from '#lib/server/sharing.js';
 import { RIOT_AUTH_AUTHORIZE_URL } from '#lib/server/providers/valorant/constants.js';
 import {
 	connectValorantAccount,
@@ -29,9 +29,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		user: locals.user,
 		riotAuthorizeUrl: RIOT_AUTH_AUTHORIZE_URL,
 		dashboard,
-		profileShare: dashboard.activeAccount
-			? await getProfileShare(locals.user.id, dashboard.activeAccount.id)
-			: null
+		profileShare: dashboard.share
 	};
 };
 
@@ -148,7 +146,7 @@ export const actions: Actions = {
 		if (!res.ok) {
 			return fail(400, { syncError: res.error ?? 'Refresh failed.' });
 		}
-		return { synced: true };
+		return { synced: true, alreadyRunning: res.inProgress === true };
 	},
 
 	disconnectAccount: async ({ request, locals }) => {

@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { dev } from '$app/env';
 import type { Cookies } from '@sveltejs/kit';
-import { eq } from 'drizzle-orm';
+import { eq, lt } from 'drizzle-orm';
 import { getDb, schema } from '../db';
 import { hashPassword, verifyPassword } from './password';
 
@@ -91,6 +91,9 @@ export async function createAppSession(userId: string): Promise<{
 	const token = generateSessionToken();
 	const sessionId = hashSessionToken(token);
 	const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
+
+	// Opportunistic bounded cleanup: expired rows are only deleted otherwise on reuse.
+	await db.delete(schema.appSessions).where(lt(schema.appSessions.expiresAt, new Date()));
 
 	await db.insert(schema.appSessions).values({
 		id: sessionId,

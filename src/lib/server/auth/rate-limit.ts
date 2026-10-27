@@ -33,6 +33,12 @@ export function checkLoginRateLimit(
 }
 
 export function recordFailedLogin(key: string, now = Date.now()): void {
+	// Bound memory in long-lived processes: sweep dead keys once the map grows.
+	if (failedLoginAttempts.size > 500) {
+		for (const [k, r] of failedLoginAttempts) {
+			if (r.resetAt <= now) failedLoginAttempts.delete(k);
+		}
+	}
 	const existing = failedLoginAttempts.get(key);
 	if (!existing || existing.resetAt <= now) {
 		failedLoginAttempts.set(key, { count: 1, resetAt: now + WINDOW_MS });

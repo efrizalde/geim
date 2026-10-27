@@ -1,10 +1,22 @@
+import { eq } from 'drizzle-orm';
 import { z } from 'zod';
+import { getDb, schema } from '../../db';
 import { VALORANT_CURRENCIES } from './constants';
 import { lookupVerifiedSkinCatalog, type SkinAcquisitionSource } from './skin-catalog';
 import type { DatedFxRate, RegionalVpPackProfile } from '../../valuation/money';
 
 const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 const FX_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
+const ASSET_RETRY_MS = 60 * 1000;
+
+const ASSET_INDEX_STATE_KEY = 'valorant-asset-index-v1';
+const FX_STATE_KEY = 'fx-idr-usd-v1';
+
+export const CURRENCY_ICONS = {
+	vp: `https://media.valorant-api.com/currencies/${VALORANT_CURRENCIES.VP}/displayicon.png`,
+	radianite: `https://media.valorant-api.com/currencies/${VALORANT_CURRENCIES.RADIANITE}/displayicon.png`,
+	kingdomCredits: `https://media.valorant-api.com/currencies/${VALORANT_CURRENCIES.KINGDOM_CREDITS}/displayicon.png`
+} as const;
 
 export interface TierMetadata {
 	uuid: string;
@@ -265,7 +277,93 @@ function formatLevelEffectLabel(rawLevelItem: string | null | undefined, index: 
 	return key.replace(/([a-z])([A-Z])/g, '$1 $2');
 }
 
+export const EMPTY_ASSET_INDEX: ValorantAssetIndex = {
+	bySkinLevelId: new Map(),
+	bySkinUuid: new Map(),
+	tiersById: new Map(),
+	competitiveTiersById: new Map(),
+	seasonsById: new Map(),
+	agentsById: new Map(),
+	mapsByUrl: new Map(),
+	currencyIcons: { ...CURRENCY_ICONS }
+};
+
 let cachedAssets: { index: ValorantAssetIndex; expiresAt: number } | undefined;
+let inflightAssetRefresh: Promise<ValorantAssetIndex> | undefined;
+
+interface StoredAssetIndex {
+	v: 1;
+	fetchedAt: string;
+	skins: SkinMetadata[];
+	tiers: TierMetadata[];
+	compTiers: CompetitiveTierMeta[];
+	seasons: SeasonMeta[];
+	agents: AgentMeta[];
+	maps: MapMeta[];
+}
+
+function serializeAssetIndex(index: ValorantAssetIndex): StoredAssetIndex {
+	return {
+		v: 1,
+		fetchedAt: new Date().toISOString(),
+		skins: [...index.bySkinUuid.values()],
+		tiers: [...index.tiersById.values()],
+		compTiers: [...index.competitiveTiersById.values()],
+		seasons: [...index.seasonsById.values()],
+		agents: [...index.agentsById.values()],
+		maps: [...new Set(index.mapsByUrl.values())]
+	};
+}
+
+function deserializeAssetIndex(stored: StoredAssetIndex): ValorantAssetIndex {
+	const bySkinUuid = new Map(stored.skins.map((m) => [m.skinUuid, m]));
+	const bySkinLevelId = new Map<string, SkinMetadata>();
+	for (const meta of stored.skins) {
+		for (const levelId of meta.levelIds) bySkinLevelId.set(levelId, meta);
+	}
+	const mapsByUrl = new Map<string, MapMeta>();
+	for (const meta of stored.maps) {
+		if (meta.mapUrl) mapsByUrl.set(meta.mapUrl.toLowerCase(), meta);
+		mapsByUrl.set(meta.uuid.toLowerCase(), meta);
+	}
+	return {
+		bySkinLevelId,
+		bySkinUuid,
+		tiersById: new Map(stored.tiers.map((t) => [t.uuid, t])),
+		competitiveTiersById: new Map(stored.compTiers.map((t) => [t.tier, t])),
+		seasonsById: new Map(stored.seasons.map((s) => [s.uuid, s])),
+		agentsById: new Map(stored.agents.map((a) => [a.uuid, a])),
+		mapsByUrl,
+		currencyIcons: { ...CURRENCY_ICONS }
+	};
+}
+
+async function readDurableAssetIndex(): Promise<ValorantAssetIndex | null> {
+	const rows = await getDb()
+		.select({ value: schema.appState.value })
+		.from(schema.appState)
+		.where(eq(schema.appState.key, ASSET_INDEX_STATE_KEY))
+		.limit(1);
+	const stored = rows[0]?.value as StoredAssetIndex | undefined;
+	if (stored?.v !== 1 || !Array.isArray(stored.skins)) return null;
+	return deserializeAssetIndex(stored);
+}
+
+function refreshAssetIndexCoalesced(): Promise<ValorantAssetIndex> {
+	inflightAssetRefresh ??= refreshAssetIndex()
+		.catch((err) => {
+			if (cachedAssets) {
+				// Serve the stale copy and retry on the next expiry tick instead of every call.
+				cachedAssets = { index: cachedAssets.index, expiresAt: Date.now() + ASSET_RETRY_MS };
+				return cachedAssets.index;
+			}
+			throw err;
+		})
+		.finally(() => {
+			inflightAssetRefresh = undefined;
+		});
+	return inflightAssetRefresh;
+}
 
 export async function getValorantAssetIndex(): Promise<ValorantAssetIndex> {
 	const now = Date.now();
@@ -273,21 +371,40 @@ export async function getValorantAssetIndex(): Promise<ValorantAssetIndex> {
 		return cachedAssets.index;
 	}
 
+	if (!cachedAssets) {
+		const durable = await readDurableAssetIndex().catch(() => null);
+		if (durable) cachedAssets = { index: durable, expiresAt: now + CACHE_TTL_MS };
+	}
+
+	if (cachedAssets) {
+		// Serve the warm copy and revalidate the public catalog in the background.
+		void refreshAssetIndexCoalesced().catch(() => {});
+		return cachedAssets.index;
+	}
+
+	return refreshAssetIndexCoalesced();
+}
+
+async function refreshAssetIndex(): Promise<ValorantAssetIndex> {
+	const now = Date.now();
 	const [tiersRes, weaponsRes, compTiersRes, seasonsRes, agentsRes, mapsRes] = await Promise.all([
 		fetch('https://valorant-api.com/v1/contenttiers', { signal: AbortSignal.timeout(12_000) }),
 		fetch('https://valorant-api.com/v1/weapons', { signal: AbortSignal.timeout(15_000) }),
 		fetch('https://valorant-api.com/v1/competitivetiers', {
 			signal: AbortSignal.timeout(12_000)
-		}),
-		fetch('https://valorant-api.com/v1/seasons', { signal: AbortSignal.timeout(12_000) }),
+		}).catch(() => null),
+		fetch('https://valorant-api.com/v1/seasons', { signal: AbortSignal.timeout(12_000) }).catch(
+			() => null
+		),
 		fetch('https://valorant-api.com/v1/agents?isPlayableCharacter=true', {
 			signal: AbortSignal.timeout(12_000)
-		}),
-		fetch('https://valorant-api.com/v1/maps', { signal: AbortSignal.timeout(12_000) })
+		}).catch(() => null),
+		fetch('https://valorant-api.com/v1/maps', { signal: AbortSignal.timeout(12_000) }).catch(
+			() => null
+		)
 	]);
 
 	if (!tiersRes.ok || !weaponsRes.ok) {
-		if (cachedAssets) return cachedAssets.index;
 		throw new Error('Failed to fetch VALORANT asset metadata from valorant-api.com');
 	}
 
@@ -409,73 +526,95 @@ export async function getValorantAssetIndex(): Promise<ValorantAssetIndex> {
 		}
 	}
 
-	const competitiveTiersById = new Map<number, CompetitiveTierMeta>();
-	if (compTiersRes.ok) {
-		const tables = CompetitiveTiersApiSchema.parse(await compTiersRes.json()).data;
-		const latestTable = tables[tables.length - 1];
-		if (latestTable) {
-			for (const t of latestTable.tiers) {
-				const rawHex = t.color?.slice(0, 6);
-				competitiveTiersById.set(t.tier, {
-					tier: t.tier,
-					tierName: titleCaseRank(t.tierName),
-					divisionName: titleCaseRank(t.divisionName),
-					smallIcon: t.smallIcon ?? null,
-					largeIcon: t.largeIcon ?? null,
-					colorHex: rawHex && /^[0-9a-fA-F]{6}$/.test(rawHex) ? `#${rawHex}` : '#94a3b8'
+	// Optional enrichment degrades independently: a bad/non-OK response or schema drift in
+	// seasons, agents, maps, or tier tables must not reject the whole metadata refresh.
+	const competitiveTiersById = new Map(cachedAssets?.index.competitiveTiersById);
+	try {
+		if (compTiersRes?.ok) {
+			const tables = CompetitiveTiersApiSchema.parse(await compTiersRes.json()).data;
+			const latestTable = tables[tables.length - 1];
+			if (latestTable) {
+				competitiveTiersById.clear();
+				for (const t of latestTable.tiers) {
+					const rawHex = t.color?.slice(0, 6);
+					competitiveTiersById.set(t.tier, {
+						tier: t.tier,
+						tierName: titleCaseRank(t.tierName),
+						divisionName: titleCaseRank(t.divisionName),
+						smallIcon: t.smallIcon ?? null,
+						largeIcon: t.largeIcon ?? null,
+						colorHex: rawHex && /^[0-9a-fA-F]{6}$/.test(rawHex) ? `#${rawHex}` : '#94a3b8'
+					});
+				}
+			}
+		}
+	} catch {
+		// optional enrichment
+	}
+
+	const seasonsById = new Map(cachedAssets?.index.seasonsById);
+	try {
+		if (seasonsRes?.ok) {
+			const rawSeasons = SeasonsApiSchema.parse(await seasonsRes.json()).data;
+			seasonsById.clear();
+			const byUuid = new Map(rawSeasons.map((s) => [s.uuid.toLowerCase(), s]));
+			for (const s of rawSeasons) {
+				const parent = s.parentUuid ? byUuid.get(s.parentUuid.toLowerCase()) : undefined;
+				const fullLabel = parent
+					? `${parent.displayName.trim()}: ${s.displayName.trim()}`
+					: s.displayName.trim();
+				seasonsById.set(s.uuid.toLowerCase(), {
+					uuid: s.uuid.toLowerCase(),
+					actName: s.displayName.trim(),
+					fullLabel,
+					startTime: s.startTime,
+					endTime: s.endTime
 				});
 			}
 		}
+	} catch {
+		// optional enrichment
 	}
 
-	const seasonsById = new Map<string, SeasonMeta>();
-	if (seasonsRes.ok) {
-		const rawSeasons = SeasonsApiSchema.parse(await seasonsRes.json()).data;
-		const byUuid = new Map(rawSeasons.map((s) => [s.uuid.toLowerCase(), s]));
-		for (const s of rawSeasons) {
-			const parent = s.parentUuid ? byUuid.get(s.parentUuid.toLowerCase()) : undefined;
-			const fullLabel = parent
-				? `${parent.displayName.trim()}: ${s.displayName.trim()}`
-				: s.displayName.trim();
-			seasonsById.set(s.uuid.toLowerCase(), {
-				uuid: s.uuid.toLowerCase(),
-				actName: s.displayName.trim(),
-				fullLabel,
-				startTime: s.startTime,
-				endTime: s.endTime
-			});
+	const agentsById = new Map(cachedAssets?.index.agentsById);
+	try {
+		if (agentsRes?.ok) {
+			const rawAgents = AgentsApiSchema.parse(await agentsRes.json()).data;
+			agentsById.clear();
+			for (const a of rawAgents) {
+				agentsById.set(a.uuid.toLowerCase(), {
+					uuid: a.uuid.toLowerCase(),
+					displayName: a.displayName,
+					roleName: a.role?.displayName ?? null,
+					roleIcon: a.role?.displayIcon ?? null,
+					displayIcon: a.displayIcon ?? null,
+					bustPortrait: a.bustPortrait ?? a.fullPortrait ?? null
+				});
+			}
 		}
+	} catch {
+		// optional enrichment
 	}
 
-	const agentsById = new Map<string, AgentMeta>();
-	if (agentsRes.ok) {
-		const rawAgents = AgentsApiSchema.parse(await agentsRes.json()).data;
-		for (const a of rawAgents) {
-			agentsById.set(a.uuid.toLowerCase(), {
-				uuid: a.uuid.toLowerCase(),
-				displayName: a.displayName,
-				roleName: a.role?.displayName ?? null,
-				roleIcon: a.role?.displayIcon ?? null,
-				displayIcon: a.displayIcon ?? null,
-				bustPortrait: a.bustPortrait ?? a.fullPortrait ?? null
-			});
+	const mapsByUrl = new Map(cachedAssets?.index.mapsByUrl);
+	try {
+		if (mapsRes?.ok) {
+			const rawMaps = MapsApiSchema.parse(await mapsRes.json()).data;
+			mapsByUrl.clear();
+			for (const m of rawMaps) {
+				const meta: MapMeta = {
+					uuid: m.uuid.toLowerCase(),
+					mapUrl: m.mapUrl ?? m.uuid,
+					displayName: m.displayName,
+					listViewIcon: m.listViewIcon ?? null,
+					splash: m.splash ?? null
+				};
+				if (m.mapUrl) mapsByUrl.set(m.mapUrl.toLowerCase(), meta);
+				mapsByUrl.set(m.uuid.toLowerCase(), meta);
+			}
 		}
-	}
-
-	const mapsByUrl = new Map<string, MapMeta>();
-	if (mapsRes.ok) {
-		const rawMaps = MapsApiSchema.parse(await mapsRes.json()).data;
-		for (const m of rawMaps) {
-			const meta: MapMeta = {
-				uuid: m.uuid.toLowerCase(),
-				mapUrl: m.mapUrl ?? m.uuid,
-				displayName: m.displayName,
-				listViewIcon: m.listViewIcon ?? null,
-				splash: m.splash ?? null
-			};
-			if (m.mapUrl) mapsByUrl.set(m.mapUrl.toLowerCase(), meta);
-			mapsByUrl.set(m.uuid.toLowerCase(), meta);
-		}
+	} catch {
+		// optional enrichment
 	}
 
 	const index: ValorantAssetIndex = {
@@ -486,14 +625,23 @@ export async function getValorantAssetIndex(): Promise<ValorantAssetIndex> {
 		seasonsById,
 		agentsById,
 		mapsByUrl,
-		currencyIcons: {
-			vp: `https://media.valorant-api.com/currencies/${VALORANT_CURRENCIES.VP}/displayicon.png`,
-			radianite: `https://media.valorant-api.com/currencies/${VALORANT_CURRENCIES.RADIANITE}/displayicon.png`,
-			kingdomCredits: `https://media.valorant-api.com/currencies/${VALORANT_CURRENCIES.KINGDOM_CREDITS}/displayicon.png`
-		}
+		currencyIcons: { ...CURRENCY_ICONS }
 	};
 
 	cachedAssets = { index, expiresAt: now + CACHE_TTL_MS };
+	// Best-effort durable copy so other cold processes skip the multi-MB catalog download.
+	void getDb()
+		.insert(schema.appState)
+		.values({
+			key: ASSET_INDEX_STATE_KEY,
+			value: serializeAssetIndex(index),
+			updatedAt: new Date()
+		})
+		.onConflictDoUpdate({
+			target: schema.appState.key,
+			set: { value: serializeAssetIndex(index), updatedAt: new Date() }
+		})
+		.catch(() => {});
 	return index;
 }
 
@@ -581,14 +729,42 @@ const FrankfurterSchema = z.object({
 	})
 });
 
+const StoredFxRateSchema = z.object({
+	baseCurrency: z.literal('IDR'),
+	quoteCurrency: z.literal('USD'),
+	rateScaledE8: z.string().transform((s) => BigInt(s)),
+	source: z.string(),
+	asOf: z.string()
+});
+
 let cachedIdrToUsdFx: { rate: DatedFxRate; expiresAt: number } | undefined;
+let inflightFxRefresh: Promise<DatedFxRate | null> | undefined;
 
-export async function getIdrToUsdFxRate(): Promise<DatedFxRate | null> {
+async function readDurableFxRate(): Promise<DatedFxRate | null> {
+	const rows = await getDb()
+		.select({ value: schema.appState.value })
+		.from(schema.appState)
+		.where(eq(schema.appState.key, FX_STATE_KEY))
+		.limit(1);
+	const parsed = StoredFxRateSchema.safeParse(rows[0]?.value);
+	return parsed.success ? parsed.data : null;
+}
+
+function persistFxRate(rate: DatedFxRate): void {
+	// BigInt is not JSON-serializable; store the scaled rate as a string.
+	const value = { ...rate, rateScaledE8: rate.rateScaledE8.toString() };
+	void getDb()
+		.insert(schema.appState)
+		.values({ key: FX_STATE_KEY, value, updatedAt: new Date() })
+		.onConflictDoUpdate({
+			target: schema.appState.key,
+			set: { value, updatedAt: new Date() }
+		})
+		.catch(() => {});
+}
+
+async function refreshFxRate(): Promise<DatedFxRate | null> {
 	const now = Date.now();
-	if (cachedIdrToUsdFx && cachedIdrToUsdFx.expiresAt > now) {
-		return cachedIdrToUsdFx.rate;
-	}
-
 	try {
 		const res = await fetch('https://api.frankfurter.dev/v1/latest?base=IDR&symbols=USD', {
 			signal: AbortSignal.timeout(6_000)
@@ -606,8 +782,35 @@ export async function getIdrToUsdFxRate(): Promise<DatedFxRate | null> {
 		};
 
 		cachedIdrToUsdFx = { rate, expiresAt: now + FX_CACHE_TTL_MS };
+		persistFxRate(rate);
 		return rate;
 	} catch {
 		return cachedIdrToUsdFx?.rate ?? null;
 	}
+}
+
+/**
+ * Last saved IDR→USD rate. Never blocks a render on the FX network call: a durable copy is
+ * used immediately (with its `asOf` date) while a refresh runs in the background.
+ */
+export async function getIdrToUsdFxRate(): Promise<DatedFxRate | null> {
+	const now = Date.now();
+	if (cachedIdrToUsdFx && cachedIdrToUsdFx.expiresAt > now) {
+		return cachedIdrToUsdFx.rate;
+	}
+
+	if (!cachedIdrToUsdFx) {
+		const durable = await readDurableFxRate().catch(() => null);
+		if (durable) cachedIdrToUsdFx = { rate: durable, expiresAt: now + FX_CACHE_TTL_MS };
+	}
+
+	if (cachedIdrToUsdFx) {
+		void refreshFxRate();
+		return cachedIdrToUsdFx.rate;
+	}
+
+	inflightFxRefresh ??= refreshFxRate().finally(() => {
+		inflightFxRefresh = undefined;
+	});
+	return inflightFxRefresh;
 }

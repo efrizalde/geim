@@ -38,19 +38,16 @@
 	);
 </script>
 
-<div
-	class="relative inline-flex items-center gap-0.5"
-	role="group"
-	aria-label="Skin upgrade levels"
->
+<div class="relative inline-flex items-center" role="group" aria-label="Skin upgrade levels">
 	{#each normalizedLevels as lvl (lvl.uuid)}
 		{@const isFilled = mode === 'inventory' ? lvl.unlocked : lvl.levelNumber === 1}
-		{@const isInteractive = Boolean(onSelectLevel && (lvl.streamedVideo || lvl.displayIcon))}
+		{@const isInteractive = Boolean(onSelectLevel)}
 		{@const isHovered = hoveredLevel === lvl.levelNumber}
 
 		<div class="relative inline-flex">
 			<button
 				type="button"
+				disabled={!isInteractive}
 				onmouseenter={() => (hoveredLevel = lvl.levelNumber)}
 				onmouseleave={() => {
 					if (hoveredLevel === lvl.levelNumber) hoveredLevel = null;
@@ -62,7 +59,7 @@
 				onclick={() => {
 					if (onSelectLevel) onSelectLevel(lvl);
 				}}
-				class="group/star rounded-md p-0.5 transition focus:outline-none {isInteractive
+				class="group/star flex min-h-6 min-w-6 items-center justify-center rounded-md p-0.5 transition focus-visible:ring-2 focus-visible:ring-neu-cyan {isInteractive
 					? 'cursor-pointer hover:scale-115 hover:bg-white/[0.06]'
 					: 'cursor-default'}"
 				aria-label={`Level ${lvl.levelNumber}: ${lvl.effectLabel}`}
@@ -118,7 +115,7 @@
 						{lvl.effectLabel}
 					</p>
 
-					{#if lvl.streamedVideo && onSelectLevel}
+					{#if (lvl.streamedVideo || lvl.hasVideo) && onSelectLevel}
 						<p class="mt-1 inline-flex items-center gap-1 font-mono text-[9px] text-neu-cyan">
 							<Play class="h-2.5 w-2.5 fill-current" />
 							<span>Click star to preview</span>

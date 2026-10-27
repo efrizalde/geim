@@ -85,11 +85,13 @@
 		></div>
 
 		{#if profile?.heroAgentPortraitUrl}
-			<img
-				src={profile.heroAgentPortraitUrl}
-				alt=""
-				class="absolute -top-10 right-6 hidden h-72 w-72 object-contain opacity-28 drop-shadow-[0_12px_28px_rgba(0,0,0,0.85)] lg:block"
-			/>
+			<picture>
+				<source media="(min-width: 1024px)" srcset={profile.heroAgentPortraitUrl} />
+				<img
+					alt=""
+					class="absolute -top-10 right-6 hidden h-72 w-72 object-contain opacity-28 drop-shadow-[0_12px_28px_rgba(0,0,0,0.85)] lg:block"
+				/>
+			</picture>
 		{/if}
 	</div>
 

@@ -504,7 +504,38 @@ select optgroup {
 	--gy: 50%;
 	--glare-opacity: 0;
 	transform-style: preserve-3d;
-	will-change: transform;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+	.inventory-card:not(:hover):not(:focus-within) [data-rarity-float] {
+		animation: inventory-weapon-float 5s ease-in-out infinite;
+		animation-delay: var(--idle-float-delay, 0s);
+	}
+
+	.inventory-card:not(:hover):not(:focus-within) .rarity-conic-mask {
+		animation: inventory-border-glow 6.5s ease-in-out infinite;
+		animation-delay: var(--idle-float-delay, 0s);
+	}
+}
+
+@keyframes inventory-border-glow {
+	0%,
+	100% {
+		opacity: var(--idle-border-low);
+	}
+	50% {
+		opacity: var(--idle-border-high);
+	}
+}
+
+@keyframes inventory-weapon-float {
+	0%,
+	100% {
+		transform: translateY(0);
+	}
+	50% {
+		transform: translateY(-3px);
+	}
 }
 
 /* Tier-stepped resting depth & outer bloom */

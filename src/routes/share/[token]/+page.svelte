@@ -6,9 +6,8 @@
 	import InventorySection from '#lib/components/InventorySection.svelte';
 	import MobileFloatingNav from '#lib/components/MobileFloatingNav.svelte';
 	import ProfileHero, { type ModuleKey } from '#lib/components/ProfileHero.svelte';
-	import SkinInspectorModal, {
-		type SkinInspectorPayload
-	} from '#lib/components/SkinInspectorModal.svelte';
+	import LazySkinInspector from '#lib/components/LazySkinInspector.svelte';
+	import type { SkinInspectorPayload } from '#lib/components/SkinInspectorModal.svelte';
 	import SharedStatsSection from '#lib/components/SharedStatsSection.svelte';
 	import type { PageProps } from './$types';
 
@@ -111,5 +110,5 @@
 />
 
 {#if inspectorTarget}
-	<SkinInspectorModal target={inspectorTarget} onClose={() => (inspectorTarget = null)} />
+	<LazySkinInspector target={inspectorTarget} onClose={() => (inspectorTarget = null)} />
 {/if}
