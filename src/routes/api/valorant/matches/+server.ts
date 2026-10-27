@@ -1,5 +1,8 @@
 import { error, json } from '@sveltejs/kit';
-import { loadMatchScoreboard, loadTrackerMatchesPage } from '#lib/server/providers/valorant/service.js';
+import {
+	loadMatchScoreboard,
+	loadTrackerMatchesPage
+} from '#lib/server/providers/valorant/service.js';
 import type { RequestHandler } from './$types';
 
 /** Owner-only match feed: paged match summaries, or one match's scoreboard via ?match=. */

@@ -57,7 +57,7 @@ describe('secret redaction', () => {
 			'Authorization: Bearer secret_bearer_tok',
 			'{"username":"player","password":"myHunter2Password"}',
 			'HenrikDev key HDEV-12345678-1234-1234-1234-1234567890ab leaked in logs',
-			'https://api.henrikdev.xyz/valorant/v1/account/NAON/EUY?api_key=HDEV-12345678-1234-1234-1234-1234567890ab'
+			'https://api.henrikdev.xyz/valorant/v1/account/PLAYER/TAG?api_key=HDEV-12345678-1234-1234-1234-1234567890ab'
 		].join(' | ');
 
 		const clean = redactSecrets(dirty);
@@ -444,8 +444,8 @@ describe('VALORANT career profile & detailed match telemetry parser', () => {
 			players: [
 				{
 					subject: 'owner-puuid',
-					gameName: 'NAON',
-					tagLine: 'EUY',
+					gameName: 'PLAYER',
+					tagLine: 'TAG',
 					teamId: 'Blue',
 					characterId: 'agent-clove',
 					competitiveTier: 12,
@@ -649,13 +649,13 @@ describe('VALORANT career profile & detailed match telemetry parser', () => {
 				mapsByUrl: new Map(),
 				currencyIcons: { vp: '', radianite: '', kingdomCredits: '' }
 			},
-			{ puuid: 'owner-puuid', gameName: 'NAON', tagLine: 'EUY' }
+			{ puuid: 'owner-puuid', gameName: 'PLAYER', tagLine: 'TAG' }
 		);
 
 		const board = hydrated[0]!.scoreboard;
 		expect(board.find((p) => p.puuid === 'owner-puuid')).toMatchObject({
-			gameName: 'NAON',
-			tagLine: 'EUY',
+			gameName: 'PLAYER',
+			tagLine: 'TAG',
 			agentName: 'Clove'
 		});
 		expect(board.find((p) => p.puuid === 'resolved-ally-puuid')).toMatchObject({
@@ -748,8 +748,8 @@ describe('HenrikDev tracker normalization', () => {
 			players: [
 				{
 					puuid: 'owner-puuid',
-					name: 'NAON',
-					tag: 'EUY',
+					name: 'PLAYER',
+					tag: 'TAG',
 					team_id: 'Red',
 					agent: { id: 'agent-clove', name: 'Clove' },
 					tier: { id: 12, name: 'Gold 1' },

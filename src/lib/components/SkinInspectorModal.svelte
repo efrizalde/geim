@@ -32,6 +32,8 @@
 		onClose: () => void;
 	}
 
+	// skinUuid is consumed by the parent while fetching inventory details.
+	// eslint-disable-next-line svelte/no-unused-props
 	let { target, onClose }: Props = $props();
 
 	let modalPanelEl = $state<HTMLDivElement | null>(null);

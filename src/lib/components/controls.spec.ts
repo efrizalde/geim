@@ -230,7 +230,7 @@ describe('themed dropdowns, rarity summary & form controls', () => {
 		const { body } = render(TrackerSection, {
 			props: {
 				ownerPuuid: 'owner-1',
-				ownerAccount: { id: 'acc-1', gameName: 'NAON', tagLine: 'EUY' },
+				ownerAccount: { id: 'acc-1', gameName: 'PLAYER', tagLine: 'TAG' },
 				profile: null,
 				tracker: {
 					latestSeasonId: 'act-current',

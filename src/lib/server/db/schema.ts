@@ -147,9 +147,6 @@ export const trackerSnapshots = pgTable(
 		createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
 	},
 	(table) => [
-		index('tracker_snapshots_account_fetched_idx').on(
-			table.linkedAccountId,
-			table.fetchedAt.desc()
-		)
+		index('tracker_snapshots_account_fetched_idx').on(table.linkedAccountId, table.fetchedAt.desc())
 	]
 );

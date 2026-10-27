@@ -259,12 +259,13 @@
 	const visibleSkins = $derived(
 		filteredAndSortedSkins.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE)
 	);
+	let previousFilters = '';
 	$effect(() => {
-		invSearch;
-		invFilter;
-		selectedTierKey;
-		invSort;
-		page = 1;
+		const filters = JSON.stringify([invSearch, invFilter, selectedTierKey, invSort]);
+		if (filters !== previousFilters) {
+			previousFilters = filters;
+			page = 1;
+		}
 	});
 
 	const filterTabs: Array<{ id: InvFilter; label: string }> = [
@@ -855,9 +856,7 @@
 							</div>
 
 							<!-- Interactive Stars + Variant Swatches + BOTH VP Cost & Fiat Estimate -->
-							<div
-								class="relative z-20 mt-auto flex flex-col gap-2 border-t border-white/10 pt-2"
-							>
+							<div class="relative z-20 mt-auto flex flex-col gap-2 border-t border-white/10 pt-2">
 								<div class="flex min-h-7 flex-wrap items-center justify-between gap-2">
 									<StarLevelIndicator
 										levels={skin.levels}

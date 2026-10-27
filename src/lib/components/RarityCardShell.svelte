@@ -270,7 +270,11 @@
 		<!-- Animated Rotating Conic Energy Border (Tier 3 Premium, Tier 4 Exclusive, Tier 5 Ultra) -->
 		{#if spec.hasAnimatedBorder}
 			<div
-				style="--idle-border-low: {spec.rank === 5 ? 0.62 : spec.rank === 4 ? 0.5 : 0.35}; --idle-border-high: {spec.rank === 5 ? 0.85 : spec.rank === 4 ? 0.7 : 0.5};"
+				style="--idle-border-low: {spec.rank === 5
+					? 0.62
+					: spec.rank === 4
+						? 0.5
+						: 0.35}; --idle-border-high: {spec.rank === 5 ? 0.85 : spec.rank === 4 ? 0.7 : 0.5};"
 				class="rarity-conic-mask absolute inset-0 rounded-2xl transition-opacity duration-300 {spec.rank ===
 				5
 					? 'opacity-85 group-hover:opacity-100'
