@@ -125,15 +125,11 @@ src/
 │       └── valuation/       # VP pricing, pack profiles, FX conversion
 ├── routes/                  # Dashboard, login, register, public shared profiles, media proxy
 scripts/spike-valorant.ts    # Milestone 0 auth spike
-docs/                        # PLAN.md · RESEARCH.md
 ```
 
 ## Project status
 
 Initialized 2026-10-26. Scaffolded so far: app workspace, Drizzle schema foundation, `AES-256-GCM` session crypto, VALORANT zod parsers, neumorphic UI shell, and the Milestone 0 CLI spike. **Live Riot verification is the current milestone.**
-
-- [Implementation plan](docs/PLAN.md)
-- [Data sources and research](docs/RESEARCH.md)
 
 ## Security & legal
 
@@ -148,9 +144,8 @@ Initialized 2026-10-26. Scaffolded so far: app workspace, Drizzle schema foundat
 
 Early stage — the architecture and conventions are still settling. If you want to help:
 
-1. Read [docs/PLAN.md](docs/PLAN.md) to see where things are headed.
-2. Open an issue before starting on anything non-trivial.
-3. Keep Riot-specific logic inside `src/lib/server/providers/` and never leak secrets to the client.
+1. Open an issue before starting on anything non-trivial.
+2. Keep Riot-specific logic inside `src/lib/server/providers/` and never leak secrets to the client.
 
 ## License
 
