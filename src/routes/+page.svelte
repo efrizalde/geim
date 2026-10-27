@@ -653,7 +653,7 @@
 											<p class="text-xs leading-relaxed text-slate-300">
 												Sign in on Riot Games. Once redirected to
 												<code class="font-mono text-white">playvalorant.com/opt_in</code>, copy the
-												full URL — then just switch back here.
+												full URL, then switch back here.
 											</p>
 										</div>
 
@@ -715,12 +715,13 @@
 											</div>
 											{#if autoDetected}
 												<p role="status" class="font-mono text-[10px] font-bold text-emerald-400">
-													Redirect URL auto-detected — connecting…
+													Redirect URL detected. Connecting…
 												</p>
 											{:else}
 												<p class="font-mono text-[10px] leading-relaxed text-slate-500">
-													Auto-capture on: copy the URL in the Riot tab, switch back — it fills
-													&amp; connects by itself. Pasting anywhere on this page works too.
+													Auto-capture on: copy the URL in the Riot tab, switch back, and this
+													form fills and connects by itself. Pasting anywhere on this page works
+													too.
 												</p>
 											{/if}
 										</div>
@@ -885,6 +886,28 @@
 							</form>
 						{/key}
 					{/if}
+
+					<!-- Security notes + honest disclaimer; shown regardless of the chosen method -->
+					<div
+						class="neu-well-sm flex items-start gap-3 rounded-xl border border-white/[0.06] p-3.5"
+					>
+						<ShieldCheck class="mt-0.5 h-4 w-4 shrink-0 text-neu-cyan" />
+						<div class="text-[11px] leading-relaxed text-slate-400">
+							<p>
+								<span class="font-semibold text-slate-200">How your session is handled.</span>
+								Tokens and cookies are sealed with
+								<code class="font-mono text-slate-300">AES-256-GCM</code> before they touch the
+								database, are only used to pull your own game data, and are wiped when you
+								disconnect the account. A Riot password entered here is used once for sign-in and
+								never stored.
+							</p>
+							<p class="mt-1.5 border-t border-white/[0.06] pt-1.5">
+								geim is an unofficial, fan-made tool and is not affiliated with or endorsed by
+								Riot Games. Only link accounts you own, and use at your own risk under Riot's
+								Terms of Service.
+							</p>
+						</div>
+					</div>
 				</section>
 			</div>
 		</div>

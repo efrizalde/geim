@@ -59,7 +59,8 @@
 			</span>
 		</span>
 		<span class="text-[11px] text-slate-400">
-			Opening this link never syncs live Riot data. Only the owner can publish an update.
+			Opening this link never syncs live Riot data. Only the person who published it can update
+			the snapshot.
 		</span>
 	</div>
 

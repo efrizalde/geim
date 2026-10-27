@@ -9,7 +9,20 @@
 
 <svelte:head>
 	<link rel="icon" href={favicon} />
-	<title>g. — VALORANT Command Deck</title>
+	<title>g. | VALORANT Dashboard</title>
+	<meta
+		name="description"
+		content="A self-hosted VALORANT dashboard for your daily shop, skin collection value, and match history. Your Riot session stays sealed on your own server."
+	/>
+	<meta name="theme-color" content="#070a11" />
+	<meta property="og:type" content="website" />
+	<meta property="og:site_name" content="geim" />
+	<meta property="og:title" content="g. | VALORANT Dashboard" />
+	<meta
+		property="og:description"
+		content="Daily shop, skin collection value, and match history in one self-hosted VALORANT dashboard."
+	/>
+	<meta name="twitter:card" content="summary" />
 </svelte:head>
 
 <div

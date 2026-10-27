@@ -174,7 +174,7 @@
 		<div id="share-description" class="flex flex-col gap-3">
 			<p class="text-xs leading-relaxed text-slate-300 sm:text-[13px]">
 				Create a permanent read-only showcase URL from your latest saved sync. Opening the shared
-				link never triggers live Riot requests—re-publish anytime to refresh your snapshot while
+				link never triggers live Riot requests. Re-publish anytime to refresh your snapshot while
 				keeping the exact same URL.
 			</p>
 

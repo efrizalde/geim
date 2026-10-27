@@ -2129,7 +2129,7 @@
 				>
 					{loadingOlder
 						? 'Loading older matches…'
-						: `Load older matches — ${allMatches.length} of ${storedTotal} indexed`}
+						: `Load older matches: ${allMatches.length} of ${storedTotal} indexed`}
 				</button>
 			</div>
 		{/if}

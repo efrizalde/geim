@@ -64,6 +64,7 @@
 	}: Props = $props();
 
 	let syncing = $state(false);
+	let disconnectArmed = $state(false);
 </script>
 
 <section class="glass-neu relative overflow-hidden rounded-2xl">
@@ -379,17 +380,40 @@
 						</button>
 					</form>
 
-					<form method="POST" action="?/disconnectAccount" use:enhance>
-						<input type="hidden" name="accountId" value={activeAccount.id} />
+					{#if disconnectArmed}
+						<form
+							method="POST"
+							action="?/disconnectAccount"
+							use:enhance
+							class="flex items-center gap-1"
+						>
+							<input type="hidden" name="accountId" value={activeAccount.id} />
+							<button
+								type="submit"
+								class="neu-btn flex min-h-10 cursor-pointer items-center rounded-xl px-3 py-2 text-xs font-semibold text-rose-300 hover:text-rose-200"
+								title="Delete this linked account and its stored session"
+							>
+								Delete?
+							</button>
+							<button
+								type="button"
+								onclick={() => (disconnectArmed = false)}
+								class="neu-btn flex min-h-10 cursor-pointer items-center rounded-xl px-3 py-2 text-xs font-semibold text-slate-300"
+							>
+								Keep
+							</button>
+						</form>
+					{:else}
 						<button
-							type="submit"
+							type="button"
+							onclick={() => (disconnectArmed = true)}
 							class="neu-btn flex h-10 w-10 cursor-pointer items-center justify-center rounded-xl text-slate-400 hover:text-rose-400"
-							title="Disconnect account and wipe local encrypted session"
-							aria-label="Disconnect account"
+							title="Remove this linked account and its stored session"
+							aria-label="Remove linked account"
 						>
 							<Trash2 class="h-3.5 w-3.5" />
 						</button>
-					</form>
+					{/if}
 				</div>
 			</div>
 		{/if}

@@ -30,8 +30,7 @@
 		</div>
 
 		<p class="text-sm leading-relaxed text-slate-400">
-			Use your geim username and password to access your saved Riot accounts. Existing vault owners
-			can log in with the username <strong class="text-slate-200">owner</strong>.
+			Sign in with your geim username and password to open your saved Riot accounts.
 		</p>
 
 		{#if form?.error}
