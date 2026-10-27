@@ -130,10 +130,12 @@ export async function connectValorantAccount(
 					status: 'error',
 					message:
 						outcome.status === 'blocked_captcha'
-							? 'Riot blocked direct login with Cloudflare/hCaptcha. Use the Redirect URL option instead.'
+							? `Riot requires interactive captcha for direct login (${outcome.detail ?? 'blocked'}). Use the Redirect URL option instead.`
 							: outcome.status === 'invalid_credentials'
 								? 'Invalid Riot username or password.'
-								: `Direct login failed (${outcome.status}).`
+								: outcome.status === 'rate_limited'
+									? 'Riot rate-limited login attempts. Wait a few minutes and retry.'
+									: `Direct login failed: ${outcome.reason}`
 				};
 			}
 			tokens = outcome.tokens;

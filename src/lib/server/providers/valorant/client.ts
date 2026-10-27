@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { safeErrorMessage } from '../../crypto/redact';
+import { redactSecrets, safeErrorMessage } from '../../crypto/redact';
 import {
 	DEFAULT_CLIENT_PLATFORM_B64,
 	RIOT_AUTH_AUTHORIZE_URL,
@@ -173,9 +173,19 @@ const RiotAuthApiResponseSchema = z.object({
 				.optional()
 		})
 		.optional(),
+	success: z
+		.object({
+			redirect_url: z.string().optional()
+		})
+		.optional(),
 	multifactor: z
 		.object({
 			email: z.string().optional()
+		})
+		.optional(),
+	captcha: z
+		.object({
+			type: z.string().optional()
 		})
 		.optional()
 });
@@ -242,10 +252,9 @@ export async function attemptDirectLogin(
 			},
 			body: JSON.stringify({
 				type: 'auth',
-				username,
-				password,
+				language: 'en_US',
 				remember: true,
-				language: 'en_US'
+				riot_identity: { captcha: '', username, password }
 			}),
 			signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS)
 		});
@@ -260,13 +269,15 @@ export async function attemptDirectLogin(
 		}
 		if (loginRes.status === 429) return { status: 'rate_limited' };
 
-		const parsed = RiotAuthApiResponseSchema.parse(await loginRes.json());
+		const rawBody = await loginRes.text();
+		const parsed = RiotAuthApiResponseSchema.parse(JSON.parse(rawBody));
 
 		if (parsed.error === 'auth_failure') {
 			return { status: 'invalid_credentials' };
 		}
 		if (
 			parsed.type === 'captcha' ||
+			parsed.captcha ||
 			parsed.error === 'captcha_not_allowed' ||
 			parsed.error === 'rate_limited'
 		) {
@@ -274,7 +285,7 @@ export async function attemptDirectLogin(
 				? { status: 'rate_limited' }
 				: {
 						status: 'blocked_captcha',
-						detail: `Riot login blocked by challenge (${parsed.error ?? parsed.type}).`
+						detail: `Riot login requires interactive hCaptcha (${parsed.error ?? parsed.type}).`
 					};
 		}
 		if (parsed.type === 'multifactor') {
@@ -284,14 +295,20 @@ export async function attemptDirectLogin(
 				cookies: jar
 			};
 		}
-		if (parsed.type === 'response' && parsed.response?.parameters?.uri) {
-			const tokens = parseAuthRedirectUrl(parsed.response.parameters.uri);
+		const redirectUri = parsed.success?.redirect_url ?? parsed.response?.parameters?.uri;
+		if ((parsed.type === 'success' || parsed.type === 'response') && redirectUri) {
+			const tokens = parseAuthRedirectUrl(redirectUri);
 			return { status: 'ok', tokens, cookies: jar };
 		}
 
+		console.debug(
+			'[riot-direct-auth] unhandled response',
+			loginRes.status,
+			redactSecrets(rawBody.slice(0, 500))
+		);
 		return {
 			status: 'error',
-			reason: `Unhandled Riot auth response type "${parsed.type}"${parsed.error ? ` (${parsed.error})` : ''}.`
+			reason: `Riot auth rejected the request (type="${parsed.type}"${parsed.error ? `, error="${parsed.error}"` : ''}, HTTP ${loginRes.status}).`
 		};
 	} catch (err) {
 		return { status: 'error', reason: safeErrorMessage(err) };
@@ -316,8 +333,7 @@ export async function submitDirectMfa(
 			},
 			body: JSON.stringify({
 				type: 'multifactor',
-				code: code.trim(),
-				rememberDevice: true
+				multifactor: { otp: code.trim(), rememberDevice: true }
 			}),
 			signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS)
 		});
@@ -328,18 +344,25 @@ export async function submitDirectMfa(
 			return { status: 'blocked_captcha', detail: 'Cloudflare blocked MFA submission (HTTP 403).' };
 		}
 
-		const parsed = RiotAuthApiResponseSchema.parse(await res.json());
-		if (parsed.error === 'multifactor_attempt_failed') {
+		const rawBody = await res.text();
+		const parsed = RiotAuthApiResponseSchema.parse(JSON.parse(rawBody));
+		if (parsed.error === 'multifactor_attempt_failed' || parsed.error === 'invalid_code') {
 			return { status: 'invalid_credentials' };
 		}
-		if (parsed.type === 'response' && parsed.response?.parameters?.uri) {
-			const tokens = parseAuthRedirectUrl(parsed.response.parameters.uri);
+		const redirectUri = parsed.success?.redirect_url ?? parsed.response?.parameters?.uri;
+		if ((parsed.type === 'success' || parsed.type === 'response') && redirectUri) {
+			const tokens = parseAuthRedirectUrl(redirectUri);
 			return { status: 'ok', tokens, cookies: jar };
 		}
 
+		console.debug(
+			'[riot-direct-auth] unhandled MFA response',
+			res.status,
+			redactSecrets(rawBody.slice(0, 500))
+		);
 		return {
 			status: 'error',
-			reason: `Unexpected MFA response "${parsed.type}"${parsed.error ? ` (${parsed.error})` : ''}.`
+			reason: `Unexpected MFA response (type="${parsed.type}"${parsed.error ? `, error="${parsed.error}"` : ''}, HTTP ${res.status}).`
 		};
 	} catch (err) {
 		return { status: 'error', reason: safeErrorMessage(err) };
