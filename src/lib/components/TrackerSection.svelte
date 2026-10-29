@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { enhance } from '$app/forms';
+	import { tick } from 'svelte';
 	import {
 		Calendar,
 		Check,
@@ -53,6 +55,7 @@
 	// Older matches beyond the bounded first page are fetched on demand and appended here.
 	let extraMatches = $state<HydratedMatchItem[]>([]);
 	let loadingOlder = $state(false);
+	let loadingDeepHistory = $state(false);
 	let scoreboards = $state<Record<string, HydratedMatchItem['scoreboard']>>({});
 	let scoreboardLoading = $state<string | null>(null);
 
@@ -88,13 +91,20 @@
 		}
 	}
 
-	async function toggleMatch(match: HydratedMatchItem) {
+	async function toggleMatch(match: HydratedMatchItem, button: HTMLButtonElement) {
 		const matchId = match.matchId;
 		if (expandedMatchId === matchId) {
 			expandedMatchId = null;
 			return;
 		}
 		expandedMatchId = matchId;
+		await tick();
+		button.closest('article')?.scrollIntoView({
+			behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches
+				? 'instant'
+				: 'smooth',
+			block: 'start'
+		});
 		if (!match.hasScoreboard || scoreboards[matchId] || match.scoreboard.length > 0) return;
 		if (!ownerAccount?.id || scoreboardLoading === matchId) return;
 		scoreboardLoading = matchId;
@@ -1473,15 +1483,30 @@
 				</span>
 
 				{#if ownerAccount?.id}
-					<form method="POST" action="?/refreshAccount" class="inline-flex">
+					<form
+						method="POST"
+						action="?/refreshAccount"
+						class="inline-flex"
+						use:enhance={() => {
+							loadingDeepHistory = true;
+							return async ({ update }) => {
+								try {
+									await update();
+								} finally {
+									loadingDeepHistory = false;
+								}
+							};
+						}}
+					>
 						<input type="hidden" name="accountId" value={ownerAccount.id} />
 						<input type="hidden" name="deepHistory" value="1" />
 						<button
 							type="submit"
+							disabled={loadingDeepHistory}
 							class="neu-btn cursor-pointer rounded-lg px-2.5 py-1 font-mono text-[10px] font-bold text-neu-cyan transition hover:text-white"
 							title="Scan deeper Riot PD match-history & competitive-updates pages"
 						>
-							Fetch Deep History
+							{loadingDeepHistory ? 'Fetching Deep History…' : 'Fetch Deep History'}
 						</button>
 					</form>
 				{/if}
@@ -1528,7 +1553,20 @@
 			</div>
 		{/if}
 
-		{#if historyMatches.length === 0}
+		{#if loadingDeepHistory}
+			<div role="status" aria-live="polite" class="flex flex-col gap-3">
+				<p class="text-xs text-slate-400">Fetching deep match history…</p>
+				{#each [1, 2, 3] as placeholder (placeholder)}
+					<div aria-hidden="true" class="glass-card flex items-center gap-4 rounded-2xl p-4">
+						<div class="history-shimmer h-12 w-12 shrink-0 rounded-xl"></div>
+						<div class="flex flex-1 flex-col gap-2">
+							<div class="history-shimmer h-3 w-32 max-w-full rounded"></div>
+							<div class="history-shimmer h-2 w-48 max-w-full rounded"></div>
+						</div>
+					</div>
+				{/each}
+			</div>
+		{:else if historyMatches.length === 0}
 			<div
 				class="glass-neu flex flex-col items-center justify-center gap-3 rounded-2xl p-6 text-center"
 			>
@@ -1596,7 +1634,7 @@
 								delay: Math.min(idx * 42, 340),
 								easing: cubicOut
 							}}
-							class="glass-card group relative overflow-hidden rounded-2xl transition-all duration-200 {isExpanded
+							class="glass-card group relative scroll-mt-32 overflow-hidden rounded-2xl transition-all duration-200 {isExpanded
 								? 'border-white/18 shadow-[0_22px_48px_-12px_rgba(0,0,0,0.88)]'
 								: 'hover:-translate-y-0.5 hover:border-white/16'}"
 						>
@@ -1609,7 +1647,7 @@
 							<button
 								type="button"
 								aria-expanded={isExpanded}
-								onclick={() => toggleMatch(match)}
+								onclick={(event) => toggleMatch(match, event.currentTarget)}
 								class="relative flex w-full cursor-pointer flex-col gap-3 px-4 py-3.5 text-left transition sm:px-5 lg:grid lg:grid-cols-[245px_215px_1fr_32px] lg:items-center lg:gap-4"
 								style="background: radial-gradient(circle at 0% 50%, {outcomeGlowRgba} 0%, transparent 45%);"
 							>
@@ -2135,3 +2173,27 @@
 		{/if}
 	</section>
 </div>
+
+<style>
+	.history-shimmer {
+		background: linear-gradient(
+			90deg,
+			rgb(255 255 255 / 0.06),
+			rgb(255 255 255 / 0.14),
+			rgb(255 255 255 / 0.06)
+		);
+		background-size: 200% 100%;
+	}
+
+	@media (prefers-reduced-motion: no-preference) {
+		.history-shimmer {
+			animation: history-shimmer 1.5s linear infinite;
+		}
+	}
+
+	@keyframes history-shimmer {
+		to {
+			background-position: -200% 0;
+		}
+	}
+</style>

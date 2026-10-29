@@ -116,9 +116,16 @@
 	const isConnectOpen = $derived(showConnectPanel || !activeAccount || hasActiveFormPrompt);
 	const isMfaStep = $derived(Boolean(form?.mfaRequired) && form !== dismissedForm);
 
-	function openConnectPanel() {
+	async function openConnectPanel() {
 		dismissedForm = null;
 		showConnectPanel = true;
+		await tick();
+		document.getElementById('riot-session-card')?.scrollIntoView({
+			behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches
+				? 'instant'
+				: 'smooth',
+			block: 'start'
+		});
 	}
 
 	function closeConnectPanel() {
@@ -421,7 +428,7 @@
 					aria-label={activeAccount
 						? 'Link or Refresh Riot Session'
 						: 'Connect your VALORANT Account'}
-					class="glass-neu relative flex origin-top flex-col gap-5 overflow-hidden rounded-2xl p-5 sm:p-6"
+					class="glass-neu relative flex origin-top scroll-mt-32 flex-col gap-5 overflow-hidden rounded-2xl p-5 sm:p-6"
 				>
 					<!-- Top Specular Accent Line -->
 					<div
@@ -719,9 +726,8 @@
 												</p>
 											{:else}
 												<p class="font-mono text-[10px] leading-relaxed text-slate-500">
-													Auto-capture on: copy the URL in the Riot tab, switch back, and this
-													form fills and connects by itself. Pasting anywhere on this page works
-													too.
+													Auto-capture on: copy the URL in the Riot tab, switch back, and this form
+													fills and connects by itself. Pasting anywhere on this page works too.
 												</p>
 											{/if}
 										</div>
@@ -896,15 +902,14 @@
 							<p>
 								<span class="font-semibold text-slate-200">How your session is handled.</span>
 								Tokens and cookies are sealed with
-								<code class="font-mono text-slate-300">AES-256-GCM</code> before they touch the
-								database, are only used to pull your own game data, and are wiped when you
-								disconnect the account. A Riot password entered here is used once for sign-in and
-								never stored.
+								<code class="font-mono text-slate-300">AES-256-GCM</code> before they touch the database,
+								are only used to pull your own game data, and are wiped when you disconnect the account.
+								A Riot password entered here is used once for sign-in and never stored.
 							</p>
 							<p class="mt-1.5 border-t border-white/[0.06] pt-1.5">
-								geim is an unofficial, fan-made tool and is not affiliated with or endorsed by
-								Riot Games. Only link accounts you own, and use at your own risk under Riot's
-								Terms of Service.
+								geim is an unofficial, fan-made tool and is not affiliated with or endorsed by Riot
+								Games. Only link accounts you own, and use at your own risk under Riot's Terms of
+								Service.
 							</p>
 						</div>
 					</div>
