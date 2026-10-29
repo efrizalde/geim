@@ -399,6 +399,11 @@
 </div>
 
 <style>
+	@media (max-width: 639px) {
+		.inspector-content > :global(*) {
+			flex-shrink: 0;
+		}
+	}
 	.inspector-panel {
 		background: #101623;
 		border-color: rgba(255, 255, 255, 0.12);
