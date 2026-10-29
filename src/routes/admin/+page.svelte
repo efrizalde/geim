@@ -44,12 +44,12 @@
 
 <svelte:head><title>Owner admin | geim</title></svelte:head>
 
-<header class="border-b border-white/10 bg-[#090d15]/95">
+<header class="sticky top-0 z-40 border-b border-white/[0.07] bg-[#070a11]/84 backdrop-blur-2xl">
 	<div class="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-3.5 sm:px-6">
 		<BrandLogo size="sm" subtitle="Owner admin" />
 		<a
 			href={resolve('/')}
-			class="admin-link inline-flex min-h-10 items-center gap-2 rounded-lg px-3 text-sm font-semibold text-slate-200 hover:bg-white/5 hover:text-white"
+			class="neu-btn admin-link inline-flex min-h-10 items-center gap-2 rounded-xl px-3 text-sm font-semibold text-slate-200 hover:text-white"
 		>
 			<ArrowLeft class="h-4 w-4" aria-hidden="true" /> <span>Dashboard</span>
 		</a>
@@ -59,7 +59,14 @@
 <main class="admin-page mx-auto w-full max-w-6xl px-4 pt-8 pb-14 sm:px-6 sm:pt-10">
 	<div class="flex flex-wrap items-end justify-between gap-5">
 		<div>
-			<h1 class="font-display text-3xl font-bold tracking-tight text-white">Owner admin</h1>
+			<div
+				class="mb-2 inline-flex items-center gap-2 font-mono text-[10px] font-bold tracking-wider text-neu-cyan uppercase"
+			>
+				<ShieldCheck class="h-3.5 w-3.5" aria-hidden="true" /> Instance management
+			</div>
+			<h1 class="font-display text-3xl font-bold tracking-tight text-white">
+				Owner admin<span class="text-neu-accent">.</span>
+			</h1>
 			<p class="mt-2 max-w-xl text-sm leading-6 text-slate-300">
 				Manage registration and review account activity for this instance.
 			</p>
@@ -85,22 +92,32 @@
 	{:else}
 		<nav
 			aria-label="Admin sections"
-			class="mt-7 flex gap-1 overflow-x-auto border-b border-white/10 text-sm font-semibold"
+			class="neu-well-sm mt-7 flex w-fit max-w-full gap-1 overflow-x-auto rounded-xl p-1 text-sm font-semibold"
 		>
 			<a class="admin-section-link" href="#overview">Overview</a>
 			<a class="admin-section-link" href="#users">Users</a>
 			<a class="admin-section-link" href="#history">History</a>
 		</nav>
 
-		<div id="overview" class="scroll-mt-6 pt-7">
+		<div id="overview" class="scroll-mt-24 pt-7">
 			<div class="grid gap-4 lg:grid-cols-[minmax(0,1.35fr)_minmax(320px,1fr)]">
-				<section aria-labelledby="overview-title" class="admin-panel p-5 sm:p-6">
+				<section
+					aria-labelledby="overview-title"
+					class="glass-neu relative overflow-hidden rounded-2xl p-5 sm:p-6"
+				>
+					<div
+						aria-hidden="true"
+						class="pointer-events-none absolute inset-x-8 top-0 h-px bg-gradient-to-r from-transparent via-neu-cyan/60 to-transparent"
+					></div>
 					<div class="flex items-start justify-between gap-4">
 						<div>
 							<h2 id="overview-title" class="text-base font-bold text-white">Instance overview</h2>
 							<p class="mt-1 text-sm text-slate-400">Current totals across your instance</p>
 						</div>
-						<Users class="h-5 w-5 shrink-0 text-slate-400" aria-hidden="true" />
+						<span
+							class="neu-well-sm flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-cyan-400/20 text-neu-cyan"
+							><Users class="h-5 w-5" aria-hidden="true" /></span
+						>
 					</div>
 					<dl class="mt-6 grid grid-cols-2 gap-x-4 gap-y-6 sm:grid-cols-3">
 						<div>
@@ -135,7 +152,14 @@
 					</div>
 				</section>
 
-				<section aria-labelledby="registration-title" class="admin-panel flex flex-col p-5 sm:p-6">
+				<section
+					aria-labelledby="registration-title"
+					class="glass-neu relative flex flex-col overflow-hidden rounded-2xl p-5 sm:p-6"
+				>
+					<div
+						aria-hidden="true"
+						class="pointer-events-none absolute inset-x-8 top-0 h-px bg-gradient-to-r from-transparent via-neu-accent/60 to-transparent"
+					></div>
 					<div class="flex items-start justify-between gap-3">
 						<div>
 							<h2 id="registration-title" class="text-base font-bold text-white">Registration</h2>
@@ -198,7 +222,7 @@
 						<button
 							type="submit"
 							disabled={pending}
-							class="admin-button min-h-10 rounded-lg px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-45"
+							class="neu-btn min-h-10 cursor-pointer rounded-xl px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-45"
 							>{pending
 								? 'Saving…'
 								: data.registrationOpen
@@ -213,7 +237,7 @@
 		<section
 			id="users"
 			aria-labelledby="users-title"
-			class="admin-panel mt-5 scroll-mt-6 overflow-hidden"
+			class="glass-neu mt-5 scroll-mt-24 overflow-hidden rounded-2xl"
 		>
 			<div class="flex flex-wrap items-end justify-between gap-4 p-5 sm:p-6">
 				<div>
@@ -234,10 +258,11 @@
 							value={data.search}
 							maxlength="32"
 							placeholder="Search username"
-							class="admin-input h-11 w-full rounded-lg pr-3 pl-9 text-sm text-white placeholder:text-slate-400"
+							class="neu-well h-11 w-full rounded-xl pr-3 pl-9 text-sm text-white placeholder:text-slate-400"
 						/></label
 					>
-					<button class="admin-button h-11 rounded-lg px-4 text-sm font-semibold text-white"
+					<button
+						class="neu-btn h-11 cursor-pointer rounded-xl px-4 text-sm font-semibold text-white"
 						>Search</button
 					>
 					{#if data.search}<a
@@ -326,10 +351,10 @@
 		<section
 			id="history"
 			aria-labelledby="audit-title"
-			class="admin-panel mt-5 scroll-mt-6 overflow-hidden"
+			class="glass-neu mt-5 scroll-mt-24 overflow-hidden rounded-2xl"
 		>
 			<div class="flex items-start gap-3 p-5 sm:p-6">
-				<div class="rounded-lg bg-white/5 p-2 text-slate-300">
+				<div class="neu-well-sm rounded-xl border border-neu-accent/20 p-2 text-neu-accent">
 					<ShieldCheck class="h-4 w-4" aria-hidden="true" />
 				</div>
 				<div>
@@ -377,28 +402,12 @@
 </main>
 
 <style>
-	.admin-panel {
-		background: #111724;
-		border: 1px solid rgb(255 255 255 / 0.09);
-		border-radius: 14px;
-	}
-	.admin-button {
-		background: #252f40;
-		border: 1px solid rgb(255 255 255 / 0.13);
-		transition: background 150ms ease;
-	}
-	.admin-button:not(:disabled):hover {
-		background: #344157;
-	}
-	.admin-input {
-		background: #090e17;
-		border: 1px solid rgb(255 255 255 / 0.15);
-	}
 	.admin-section-link {
 		display: inline-flex;
 		align-items: center;
 		min-height: 44px;
 		padding: 0 14px;
+		border-radius: 8px;
 		color: #cbd5e1;
 		white-space: nowrap;
 	}
