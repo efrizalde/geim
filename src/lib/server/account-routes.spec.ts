@@ -4,6 +4,8 @@ import { actions as dashboardActions } from '../../routes/+page.server';
 import { actions as loginActions } from '../../routes/login/+page.server';
 import { actions as registerActions } from '../../routes/register/+page.server';
 import { clearFailedLogins } from './auth/rate-limit';
+import { registrationIsOpen } from './admin';
+import { consumeLoginAttempt } from './auth/shared-rate-limit';
 import {
 	createAppSession,
 	registerUser,
@@ -27,6 +29,8 @@ vi.mock('./sharing', () => ({
 	getProfileShare: vi.fn(),
 	publishSharedProfile: vi.fn()
 }));
+vi.mock('./admin', () => ({ registrationIsOpen: vi.fn(), isInstanceOwner: vi.fn() }));
+vi.mock('./auth/shared-rate-limit', () => ({ consumeLoginAttempt: vi.fn() }));
 vi.mock('./db', () => ({ getDb: vi.fn(), schema: {} }));
 vi.mock('./providers/valorant/service', () => ({
 	connectValorantAccount: vi.fn(),
@@ -52,11 +56,41 @@ function actionEvent(fields: Record<string, string>, signedIn = true) {
 
 beforeEach(() => {
 	vi.resetAllMocks();
+	vi.mocked(registrationIsOpen).mockResolvedValue(true);
+	vi.mocked(consumeLoginAttempt).mockResolvedValue(true);
 	clearFailedLogins('register:route-test');
 	clearFailedLogins('route-test');
 });
 
 describe('account form actions', () => {
+	it('blocks direct registration when paused or unavailable', async () => {
+		vi.mocked(registrationIsOpen)
+			.mockResolvedValueOnce(false)
+			.mockRejectedValueOnce(new Error('unavailable'));
+		expect(await registerActions.default(actionEvent({}, false) as never)).toMatchObject({
+			status: 403
+		});
+		expect(await registerActions.default(actionEvent({}, false) as never)).toMatchObject({
+			status: 503
+		});
+		expect(registerUser).not.toHaveBeenCalled();
+	});
+
+	it('fails login closed when the shared limiter rejects or is unavailable', async () => {
+		vi.mocked(consumeLoginAttempt).mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+		expect(
+			await loginActions.default(
+				actionEvent({ username: 'player_b', password: '1234' }, false) as never
+			)
+		).toMatchObject({ status: 429 });
+		vi.mocked(consumeLoginAttempt).mockRejectedValueOnce(new Error('unavailable'));
+		expect(
+			await loginActions.default(
+				actionEvent({ username: 'player_b', password: '1234' }, false) as never
+			)
+		).toMatchObject({ status: 503 });
+		expect(verifyUserCredentials).not.toHaveBeenCalled();
+	});
 	it('registers normalized usernames and signs in the newly created user', async () => {
 		vi.mocked(registerUser).mockResolvedValue({ id: 'new-user' });
 		const session = { token: 'new-token', sessionId: 'hashed-token', expiresAt: new Date() };

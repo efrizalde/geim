@@ -337,6 +337,14 @@
 								</p>
 							</div>
 							<div class="my-1 border-t border-white/8"></div>
+							{#if data.isOwner}
+								<a
+									href={resolve('/admin')}
+									role="menuitem"
+									class="flex rounded-xl px-3 py-2.5 text-xs font-semibold text-slate-200 hover:bg-white/10"
+									>Owner admin</a
+								>
+							{/if}
 							<button
 								type="button"
 								role="menuitem"

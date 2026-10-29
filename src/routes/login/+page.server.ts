@@ -1,10 +1,6 @@
 import { fail, redirect } from '@sveltejs/kit';
 import { validatePassword, validateUsername } from '#lib/server/auth/password.js';
-import {
-	checkLoginRateLimit,
-	clearFailedLogins,
-	recordFailedLogin
-} from '#lib/server/auth/rate-limit.js';
+import { consumeLoginAttempt } from '#lib/server/auth/shared-rate-limit.js';
 import {
 	createAppSession,
 	setSessionCookie,
@@ -28,30 +24,28 @@ export const actions: Actions = {
 			// Fallback if client address isn't available in test/proxy context
 		}
 
-		const rate = checkLoginRateLimit(clientKey);
-		if (!rate.allowed) {
-			return fail(429, {
-				error: `Too many failed attempts. Try again in ${rate.retryAfterSeconds}s.`
-			});
-		}
-
 		const formData = await request.formData();
 		const username = validateUsername(formData.get('username'));
 		const password = formData.get('password');
+		try {
+			const ipAllowed = await consumeLoginAttempt('ip', clientKey);
+			const userAllowed = username.ok ? await consumeLoginAttempt('user', username.value) : true;
+			if (!ipAllowed || !userAllowed)
+				return fail(429, { error: 'Too many sign-in attempts. Try again in a minute.' });
+		} catch {
+			return fail(503, { error: 'Sign-in is temporarily unavailable. Try again later.' });
+		}
 
 		const check = validatePassword(password);
 		if (!username.ok || !check.ok) {
-			recordFailedLogin(clientKey);
 			return fail(400, { error: 'Invalid username or password.' });
 		}
 
 		const user = await verifyUserCredentials(username.value, check.value);
 		if (!user) {
-			recordFailedLogin(clientKey);
 			return fail(401, { error: 'Invalid username or password.' });
 		}
 
-		clearFailedLogins(clientKey);
 		const session = await createAppSession(user.id);
 		setSessionCookie(cookies, session.token, session.expiresAt);
 

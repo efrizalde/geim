@@ -15,6 +15,13 @@
       "when": 1793085995343,
       "tag": "0001_sync-and-cache",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1793289098241,
+      "tag": "0002_funny_kylun",
+      "breakpoints": true
     }
   ]
 }

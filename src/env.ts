@@ -6,6 +6,10 @@ const optionalNonEmpty = (value: string | undefined): string | undefined => {
 };
 
 export const variables = defineEnvVars({
+	OWNER_USER_ID: {
+		description: 'UUID of the configured instance owner; absent disables the admin panel.',
+		schema: optionalNonEmpty
+	},
 	DATABASE_URL: {
 		description: 'Pooled Neon Serverless PostgreSQL connection string.',
 		schema: optionalNonEmpty

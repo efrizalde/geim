@@ -2,17 +2,28 @@ import { fail, redirect } from '@sveltejs/kit';
 import { validatePassword, validateUsername } from '#lib/server/auth/password.js';
 import { checkLoginRateLimit, recordFailedLogin } from '#lib/server/auth/rate-limit.js';
 import { createAppSession, registerUser, setSessionCookie } from '#lib/server/auth/session.js';
+import { registrationIsOpen } from '#lib/server/admin.js';
 import type { Actions, PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ locals }) => {
 	if (locals.user) {
 		redirect(303, '/');
 	}
-	return {};
+	try {
+		return { registrationOpen: await registrationIsOpen(), registrationUnavailable: false };
+	} catch {
+		return { registrationOpen: false, registrationUnavailable: true };
+	}
 };
 
 export const actions: Actions = {
 	default: async ({ request, cookies, getClientAddress }) => {
+		try {
+			if (!(await registrationIsOpen()))
+				return fail(403, { error: 'Registration is currently paused.' });
+		} catch {
+			return fail(503, { error: 'Registration is temporarily unavailable. Try again later.' });
+		}
 		let clientKey = 'register:global';
 		try {
 			clientKey = `register:${getClientAddress()}`;

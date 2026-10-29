@@ -1,5 +1,6 @@
 import {
 	index,
+	boolean,
 	integer,
 	jsonb,
 	pgTable,
@@ -16,8 +17,30 @@ export const users = pgTable('users', {
 	passwordHash: text('password_hash').notNull(),
 	displayCurrency: text('display_currency').notNull().default('IDR'),
 	purchaseRegion: text('purchase_region').notNull().default('ID'),
+	ownerPasswordReady: boolean('owner_password_ready').notNull().default(false),
 	createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 	updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+});
+
+export const adminSettings = pgTable('admin_settings', {
+	key: text('key').primaryKey(),
+	registrationOpen: boolean('registration_open').notNull().default(true),
+	changedBy: uuid('changed_by').references(() => users.id, { onDelete: 'set null' }),
+	updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+});
+
+export const adminAudit = pgTable('admin_audit', {
+	id: uuid('id').defaultRandom().primaryKey(),
+	actorId: uuid('actor_id').references(() => users.id, { onDelete: 'set null' }),
+	oldValue: boolean('old_value').notNull(),
+	newValue: boolean('new_value').notNull(),
+	createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+});
+
+export const loginAttempts = pgTable('login_attempts', {
+	key: text('key').primaryKey(),
+	count: integer('count').notNull(),
+	resetAt: timestamp('reset_at', { withTimezone: true }).notNull()
 });
 
 export const appSessions = pgTable(

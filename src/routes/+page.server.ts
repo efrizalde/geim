@@ -3,6 +3,7 @@ import { eq } from 'drizzle-orm';
 import { clearSessionCookie, invalidateAppSession } from '#lib/server/auth/session.js';
 import { getDb, schema } from '#lib/server/db/index.js';
 import { publishSharedProfile } from '#lib/server/sharing.js';
+import { isInstanceOwner } from '#lib/server/admin.js';
 import { RIOT_AUTH_AUTHORIZE_URL } from '#lib/server/providers/valorant/constants.js';
 import {
 	connectValorantAccount,
@@ -27,6 +28,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 
 	return {
 		user: locals.user,
+		isOwner: await isInstanceOwner(locals.user),
 		riotAuthorizeUrl: RIOT_AUTH_AUTHORIZE_URL,
 		dashboard,
 		profileShare: dashboard.share

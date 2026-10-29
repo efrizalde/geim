@@ -32,7 +32,7 @@ const snapshot = JSON.parse(await readFile('drizzle/meta/0001_snapshot.json', 'u
 	tables: Record<string, SnapshotTable>;
 };
 const migrations = readMigrationFiles({ migrationsFolder: './drizzle' });
-if (migrations.length !== 2) throw new Error('Expected exactly the baseline and cache migrations');
+if (migrations.length < 2) throw new Error('Expected the baseline and cache migrations');
 
 const [journal] = await sql`select to_regclass('drizzle.__drizzle_migrations') as name`;
 if (journal.name) throw new Error('Migration journal already exists; refusing to baseline');
@@ -121,7 +121,7 @@ if (!process.argv.includes('--apply')) {
 	await sql.transaction([
 		sql`create schema if not exists drizzle`,
 		sql`create table drizzle.__drizzle_migrations (id serial primary key, hash text not null, created_at bigint)`,
-		...migrations.map(
+		...migrations.slice(0, 2).map(
 			(migration) => sql`insert into drizzle.__drizzle_migrations (hash, created_at)
 			values (${migration.hash}, ${migration.folderMillis})`
 		)

@@ -62,7 +62,23 @@ For an existing database created before migrations were tracked, run `bun run sc
 
 Riot session material is encrypted at rest with AES-256-GCM and handled by server-side code. Shared profile links are public to anyone who has the URL; publish only information you intend to share.
 
-The login and registration rate limiter is currently per process. A public deployment running multiple instances needs a shared rate limiter or equivalent protection at the edge. Review hosting, access control, backups, and secret management before exposing an instance to other users.
+Login attempts are limited in PostgreSQL across instances, both by client address and by username. Each bucket allows five attempts per minute, including successful attempts. If PostgreSQL is unavailable, sign-in fails closed. Ensure the deployment supplies a trustworthy client address; otherwise the fallback is one shared address bucket. Registration retains a per-process limiter; use an edge limit as well for public deployments. Review hosting, access control, backups, and secret management before exposing an instance to other users.
+
+### Owner admin
+
+The admin panel is disabled until an existing user has been provisioned and its UUID configured. Apply migrations first and back up the database before provisioning. From a private terminal connected to the intended database, run:
+
+```bash
+bun run scripts/provision-owner.ts <existing-username>
+```
+
+This resets that user's password to a random 32-character value and invalidates all their existing geim sessions. It prints the UUID and password once: store the password in a password manager, keep terminal output private, and never paste it into logs or tickets. Set `OWNER_USER_ID` to the printed UUID in the server's deployment configuration, redeploy, then sign in with the new password. The account menu links to Owner admin. Neither registration order nor a username grants owner access.
+
+To rotate or recover owner access, run the same command for the intended existing account and update `OWNER_USER_ID` if it changed; doing so resets that account's password and invalidates its sessions. Remove `OWNER_USER_ID` and redeploy to disable the panel. Keep deployment configuration and database access restricted; possession of either is effectively administrative access. There is no MFA in this release.
+
+The panel can pause new registrations without interrupting existing users. It logs each actual registration change with the actor and previous and new values. Retain audit records for 90 days initially; an operator should schedule a database cleanup such as `DELETE FROM admin_audit WHERE created_at < now() - interval '90 days'` according to local retention requirements. Similarly, expired login-attempt rows can be removed periodically with `DELETE FROM login_attempts WHERE reset_at < now() - interval '1 day'`.
+
+Before deploying, apply the additive migrations and verify owner/non-owner access and cross-instance rate limiting in a separate environment. If rolling back to a version before the registration control while registration is paused, the old version ignores the setting; block registration at the edge first or explicitly reopen it. Migrations may remain in place during an application rollback.
 
 This project uses unofficial Riot endpoints that may change or be restricted. It is not affiliated with or endorsed by Riot Games. VALORANT and Riot Games are trademarks of Riot Games, Inc.
 
