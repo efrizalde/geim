@@ -134,7 +134,7 @@
 
 <div
 	bind:this={modalPanelEl}
-	class="glass-neu inspector-panel relative my-auto flex w-full max-w-4xl flex-col gap-4 rounded-2xl p-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:p-6"
+	class="glass-neu inspector-panel relative my-auto flex max-h-[92dvh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl sm:max-h-none sm:gap-4 sm:overflow-visible sm:p-6"
 	style="--inspector-border: {spec.borderBaseRgba}; --inspector-glow: {spec.glowRgba};"
 >
 	<!-- Top Specular Rarity Line -->
@@ -144,7 +144,7 @@
 	></div>
 
 	<div
-		class="sticky top-[-1rem] z-30 -mx-4 -mt-4 flex items-start justify-between gap-3 border-b border-white/10 bg-[#0c111d]/95 px-4 pt-[max(1rem,env(safe-area-inset-top))] pb-3 backdrop-blur-xl sm:hidden"
+		class="z-30 flex shrink-0 items-start justify-between gap-3 border-b border-white/10 bg-[#0c111d]/95 px-4 pt-4 pb-3 sm:hidden"
 	>
 		<div class="min-w-0">
 			<p
@@ -165,231 +165,237 @@
 			aria-label="Close inspector"><X class="h-5 w-5" /></button
 		>
 	</div>
-	<!-- Header: Tier Badge + Title + Price Pill + 360/Video Mode Switcher + Close -->
-	<div class="flex flex-wrap items-start justify-between gap-3">
-		<div class="hidden min-w-0 sm:block">
-			<div class="flex flex-wrap items-center gap-2">
-				{#if target.tier?.iconUrl}
-					<img src={target.tier.iconUrl} alt={target.tier.name} class="h-4 w-4 object-contain" />
-				{/if}
-				<span
-					class="font-mono text-[10px] font-bold tracking-widest uppercase"
-					style="color: {spec.primaryHex}"
-				>
-					{target.tier?.devName ?? 'Battle Pass / Event'}
-				</span>
-				<span class="text-white/20">·</span>
-				<span class="font-mono text-[10px] font-semibold tracking-widest text-slate-400 uppercase">
-					{target.weaponName}
-				</span>
+	<div
+		class="inspector-content flex min-h-0 flex-col gap-4 overflow-y-auto overscroll-contain px-4 pt-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:contents"
+	>
+		<!-- Header: Tier Badge + Title + Price Pill + 360/Video Mode Switcher + Close -->
+		<div class="flex flex-wrap items-start justify-between gap-3">
+			<div class="hidden min-w-0 sm:block">
+				<div class="flex flex-wrap items-center gap-2">
+					{#if target.tier?.iconUrl}
+						<img src={target.tier.iconUrl} alt={target.tier.name} class="h-4 w-4 object-contain" />
+					{/if}
+					<span
+						class="font-mono text-[10px] font-bold tracking-widest uppercase"
+						style="color: {spec.primaryHex}"
+					>
+						{target.tier?.devName ?? 'Battle Pass / Event'}
+					</span>
+					<span class="text-white/20">·</span>
+					<span
+						class="font-mono text-[10px] font-semibold tracking-widest text-slate-400 uppercase"
+					>
+						{target.weaponName}
+					</span>
+				</div>
+				<h3 class="mt-0.5 font-display text-xl font-bold text-white sm:text-2xl">
+					{target.skinName}
+				</h3>
 			</div>
-			<h3 class="mt-0.5 font-display text-xl font-bold text-white sm:text-2xl">
-				{target.skinName}
-			</h3>
+
+			<div class="flex flex-wrap items-center gap-2">
+				<!-- VP & Fiat Price Readout if available -->
+				{#if target.vpPrice !== undefined && target.vpPrice !== null}
+					<div class="neu-well-sm flex items-center gap-2 rounded-xl px-3 py-1.5 text-xs">
+						{#if target.vpIconUrl}
+							<img src={target.vpIconUrl} alt="VP" class="h-3.5 w-3.5 object-contain" />
+						{/if}
+						<span class="font-mono font-bold text-white tabular-nums">
+							{target.vpPrice.toLocaleString()} VP
+						</span>
+						{#if target.fiatEstimate}
+							<span class="text-white/20">·</span>
+							<span class="font-mono font-semibold text-neu-cyan tabular-nums">
+								~{target.fiatEstimate}
+							</span>
+						{/if}
+					</div>
+				{/if}
+
+				<!-- Segmented 360° Studio vs Video Preview Switcher -->
+				<div class="neu-well-sm flex items-center gap-1 rounded-xl p-1">
+					<button
+						type="button"
+						onclick={() => (userStageMode = '360')}
+						data-active={stageMode === '360'}
+						class="seg-tab flex cursor-pointer items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-bold"
+					>
+						<Rotate3d class="h-3.5 w-3.5" />
+						<span>360° View</span>
+					</button>
+					<button
+						type="button"
+						disabled={!activeMedia.videoUrl}
+						onclick={() => {
+							if (activeMedia.videoUrl) userStageMode = 'video';
+						}}
+						data-active={stageMode === 'video'}
+						class="seg-tab flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-bold {activeMedia.videoUrl
+							? 'cursor-pointer'
+							: 'cursor-not-allowed opacity-40'}"
+						title={activeMedia.videoUrl
+							? 'Watch in-game level/finisher video'
+							: 'No video available for this selection'}
+					>
+						<Film class="h-3.5 w-3.5" />
+						<span>Video</span>
+					</button>
+				</div>
+
+				<button
+					type="button"
+					data-inspector-close="desktop"
+					onclick={onClose}
+					class="neu-btn hidden cursor-pointer rounded-xl p-2 text-slate-400 hover:text-white sm:block"
+					aria-label="Close inspector"
+				>
+					<X class="h-4 w-4" />
+				</button>
+			</div>
 		</div>
 
-		<div class="flex flex-wrap items-center gap-2">
-			<!-- VP & Fiat Price Readout if available -->
-			{#if target.vpPrice !== undefined && target.vpPrice !== null}
-				<div class="neu-well-sm flex items-center gap-2 rounded-xl px-3 py-1.5 text-xs">
-					{#if target.vpIconUrl}
-						<img src={target.vpIconUrl} alt="VP" class="h-3.5 w-3.5 object-contain" />
-					{/if}
-					<span class="font-mono font-bold text-white tabular-nums">
-						{target.vpPrice.toLocaleString()} VP
-					</span>
-					{#if target.fiatEstimate}
-						<span class="text-white/20">·</span>
-						<span class="font-mono font-semibold text-neu-cyan tabular-nums">
-							~{target.fiatEstimate}
-						</span>
-					{/if}
-				</div>
+		<!-- Active Showcase Stage: Three.js 360° Interactive Studio OR Upgrade Video -->
+		<div class="neu-well relative overflow-hidden rounded-xl bg-black">
+			{#if stageMode === 'video' && activeMedia.videoUrl}
+				{#key activeMedia.videoUrl}
+					<!-- svelte-ignore a11y_media_has_caption -->
+					<video
+						src={activeMedia.videoUrl}
+						controls
+						autoplay
+						playsinline
+						class="aspect-video w-full bg-black object-contain"
+					></video>
+				{/key}
+			{:else}
+				<Weapon360Stage
+					imageUrl={activeMedia.imageUrl}
+					label={activeMedia.label}
+					tier={target.tier}
+				/>
 			{/if}
 
-			<!-- Segmented 360° Studio vs Video Preview Switcher -->
-			<div class="neu-well-sm flex items-center gap-1 rounded-xl p-1">
-				<button
-					type="button"
-					onclick={() => (userStageMode = '360')}
-					data-active={stageMode === '360'}
-					class="seg-tab flex cursor-pointer items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-bold"
-				>
-					<Rotate3d class="h-3.5 w-3.5" />
-					<span>360° View</span>
-				</button>
-				<button
-					type="button"
-					disabled={!activeMedia.videoUrl}
-					onclick={() => {
-						if (activeMedia.videoUrl) userStageMode = 'video';
-					}}
-					data-active={stageMode === 'video'}
-					class="seg-tab flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-bold {activeMedia.videoUrl
-						? 'cursor-pointer'
-						: 'cursor-not-allowed opacity-40'}"
-					title={activeMedia.videoUrl
-						? 'Watch in-game level/finisher video'
-						: 'No video available for this selection'}
-				>
-					<Film class="h-3.5 w-3.5" />
-					<span>Video</span>
-				</button>
-			</div>
-
-			<button
-				type="button"
-				data-inspector-close="desktop"
-				onclick={onClose}
-				class="neu-btn hidden cursor-pointer rounded-xl p-2 text-slate-400 hover:text-white sm:block"
-				aria-label="Close inspector"
+			<div
+				class="flex flex-wrap items-center justify-between gap-2 border-t border-white/8 bg-[#090d16]/95 px-4 py-2.5 text-xs"
 			>
-				<X class="h-4 w-4" />
-			</button>
-		</div>
-	</div>
+				<span class="inline-flex items-center gap-2 font-semibold text-white">
+					<Sparkles class="h-3.5 w-3.5" style="color: {spec.primaryHex}" />
+					{activeMedia.label}
+				</span>
 
-	<!-- Active Showcase Stage: Three.js 360° Interactive Studio OR Upgrade Video -->
-	<div class="neu-well relative overflow-hidden rounded-xl bg-black">
-		{#if stageMode === 'video' && activeMedia.videoUrl}
-			{#key activeMedia.videoUrl}
-				<!-- svelte-ignore a11y_media_has_caption -->
-				<video
-					src={activeMedia.videoUrl}
-					controls
-					autoplay
-					playsinline
-					class="aspect-video w-full bg-black object-contain"
-				></video>
-			{/key}
-		{:else}
-			<Weapon360Stage
-				imageUrl={activeMedia.imageUrl}
-				label={activeMedia.label}
-				tier={target.tier}
-			/>
+				<div class="flex items-center gap-2">
+					{#if stageMode === '360' && activeMedia.videoUrl}
+						<button
+							type="button"
+							onclick={() => (userStageMode = 'video')}
+							class="inline-flex cursor-pointer items-center gap-1 rounded-full border border-cyan-400/30 bg-cyan-400/10 px-2.5 py-0.5 font-mono text-[10px] font-semibold text-neu-cyan transition hover:bg-cyan-400/20"
+						>
+							<Play class="h-2.5 w-2.5 fill-current" />
+							<span>Watch Finisher / VFX</span>
+						</button>
+					{/if}
+					<span
+						class="rounded-full bg-white/[0.07] px-2.5 py-0.5 font-mono text-[10px] text-slate-300"
+					>
+						{activeMedia.badge}
+					</span>
+				</div>
+			</div>
+		</div>
+
+		<!-- Chroma Variants Selector (Click any variant to rotate it live in 360°!) -->
+		{#if target.chromas.length > 1}
+			<div class="flex flex-col gap-2">
+				<p class="font-mono text-[10px] font-semibold tracking-wider text-slate-400 uppercase">
+					Color Variants ({target.chromas.length}) · Click to swap model
+				</p>
+				<div class="flex gap-2 overflow-x-auto pb-1 sm:flex-wrap sm:overflow-visible sm:pb-0">
+					{#each target.chromas as chroma (chroma.uuid)}
+						{@const isActive = selection.kind === 'chroma' && selection.chromaUuid === chroma.uuid}
+						<button
+							type="button"
+							onclick={() => {
+								userSelection = { kind: 'chroma', chromaUuid: chroma.uuid };
+								if (stageMode === 'video' && !chroma.streamedVideo) {
+									userStageMode = '360';
+								}
+							}}
+							data-active={isActive}
+							aria-label="{chroma.name}{target.mode === 'inventory' && !chroma.unlocked
+								? ', locked'
+								: ''}"
+							aria-pressed={isActive}
+							class="neu-btn relative flex h-11 min-w-11 shrink-0 cursor-pointer items-center justify-center gap-2 rounded-xl p-2 text-xs sm:h-auto sm:min-w-0 sm:px-3 sm:py-1.5"
+						>
+							{#if chroma.swatch}
+								<img
+									src={chroma.swatch}
+									alt=""
+									class="h-7 w-7 rounded-md border border-white/20 object-cover sm:h-4 sm:w-4 sm:rounded-sm"
+								/>
+							{/if}
+							{#if !chroma.swatch}<span class="sm:hidden">{chroma.name.slice(0, 1)}</span>{/if}
+							<span class="hidden max-w-44 truncate font-medium sm:inline">{chroma.name}</span>
+							{#if target.mode === 'inventory' && !chroma.unlocked}
+								<Lock
+									class="absolute right-0 bottom-0 h-3 w-3 text-slate-300 sm:static sm:text-slate-500"
+								/>
+							{/if}
+						</button>
+					{/each}
+				</div>
+				<p class="text-xs text-slate-300 sm:hidden">
+					{selection.kind === 'chroma' ? activeMedia.label : 'Select a color variant'}
+				</p>
+			</div>
 		{/if}
 
-		<div
-			class="flex flex-wrap items-center justify-between gap-2 border-t border-white/8 bg-[#090d16]/95 px-4 py-2.5 text-xs"
-		>
-			<span class="inline-flex items-center gap-2 font-semibold text-white">
-				<Sparkles class="h-3.5 w-3.5" style="color: {spec.primaryHex}" />
-				{activeMedia.label}
-			</span>
-
-			<div class="flex items-center gap-2">
-				{#if stageMode === '360' && activeMedia.videoUrl}
-					<button
-						type="button"
-						onclick={() => (userStageMode = 'video')}
-						class="inline-flex cursor-pointer items-center gap-1 rounded-full border border-cyan-400/30 bg-cyan-400/10 px-2.5 py-0.5 font-mono text-[10px] font-semibold text-neu-cyan transition hover:bg-cyan-400/20"
-					>
-						<Play class="h-2.5 w-2.5 fill-current" />
-						<span>Watch Finisher / VFX</span>
-					</button>
-				{/if}
-				<span
-					class="rounded-full bg-white/[0.07] px-2.5 py-0.5 font-mono text-[10px] text-slate-300"
-				>
-					{activeMedia.badge}
-				</span>
-			</div>
-		</div>
-	</div>
-
-	<!-- Chroma Variants Selector (Click any variant to rotate it live in 360°!) -->
-	{#if target.chromas.length > 1}
-		<div class="flex flex-col gap-2">
-			<p class="font-mono text-[10px] font-semibold tracking-wider text-slate-400 uppercase">
-				Color Variants ({target.chromas.length}) · Click to swap model
-			</p>
-			<div class="flex gap-2 overflow-x-auto pb-1 sm:flex-wrap sm:overflow-visible sm:pb-0">
-				{#each target.chromas as chroma (chroma.uuid)}
-					{@const isActive = selection.kind === 'chroma' && selection.chromaUuid === chroma.uuid}
-					<button
-						type="button"
-						onclick={() => {
-							userSelection = { kind: 'chroma', chromaUuid: chroma.uuid };
-							if (stageMode === 'video' && !chroma.streamedVideo) {
-								userStageMode = '360';
-							}
-						}}
-						data-active={isActive}
-						aria-label="{chroma.name}{target.mode === 'inventory' && !chroma.unlocked
-							? ', locked'
-							: ''}"
-						aria-pressed={isActive}
-						class="neu-btn relative flex h-11 min-w-11 shrink-0 cursor-pointer items-center justify-center gap-2 rounded-xl p-2 text-xs sm:h-auto sm:min-w-0 sm:px-3 sm:py-1.5"
-					>
-						{#if chroma.swatch}
-							<img
-								src={chroma.swatch}
-								alt=""
-								class="h-7 w-7 rounded-md border border-white/20 object-cover sm:h-4 sm:w-4 sm:rounded-sm"
-							/>
-						{/if}
-						{#if !chroma.swatch}<span class="sm:hidden">{chroma.name.slice(0, 1)}</span>{/if}
-						<span class="hidden max-w-44 truncate font-medium sm:inline">{chroma.name}</span>
-						{#if target.mode === 'inventory' && !chroma.unlocked}
-							<Lock
-								class="absolute right-0 bottom-0 h-3 w-3 text-slate-300 sm:static sm:text-slate-500"
-							/>
-						{/if}
-					</button>
-				{/each}
-			</div>
-			<p class="text-xs text-slate-300 sm:hidden">
-				{selection.kind === 'chroma' ? activeMedia.label : 'Select a color variant'}
-			</p>
-		</div>
-	{/if}
-
-	<!-- Level Selector Pills -->
-	{#if target.levels.length > 0}
-		<div class="flex flex-col gap-2">
-			<p class="font-mono text-[10px] font-semibold tracking-wider text-slate-400 uppercase">
-				Upgrade Levels ({target.levels.length})
-			</p>
-			<div class="grid grid-cols-2 gap-2 md:grid-cols-4">
-				{#each target.levels as lvl (lvl.uuid)}
-					{@const isActive =
-						selection.kind === 'level' && selection.levelNumber === lvl.levelNumber}
-					<button
-						type="button"
-						onclick={() => {
-							userSelection = { kind: 'level', levelNumber: lvl.levelNumber };
-							if (lvl.streamedVideo && lvl.levelNumber > 1) {
-								userStageMode = 'video';
-							}
-						}}
-						data-active={isActive}
-						aria-pressed={isActive}
-						class="neu-btn flex cursor-pointer items-center justify-between gap-2 rounded-xl px-3 py-2 text-left text-xs"
-					>
-						<div class="min-w-0">
-							<div class="flex items-center gap-1.5">
-								<Star
-									class="h-3 w-3 shrink-0 {(
-										target.mode === 'inventory' ? lvl.unlocked : lvl.levelNumber === 1
-									)
-										? 'fill-amber-400 text-amber-400'
-										: 'text-slate-400'}"
-								/>
-								<span class="font-mono text-[10px] font-bold text-slate-300">
-									LVL {lvl.levelNumber}
-								</span>
+		<!-- Level Selector Pills -->
+		{#if target.levels.length > 0}
+			<div class="flex flex-col gap-2">
+				<p class="font-mono text-[10px] font-semibold tracking-wider text-slate-400 uppercase">
+					Upgrade Levels ({target.levels.length})
+				</p>
+				<div class="grid grid-cols-2 gap-2 md:grid-cols-4">
+					{#each target.levels as lvl (lvl.uuid)}
+						{@const isActive =
+							selection.kind === 'level' && selection.levelNumber === lvl.levelNumber}
+						<button
+							type="button"
+							onclick={() => {
+								userSelection = { kind: 'level', levelNumber: lvl.levelNumber };
+								if (lvl.streamedVideo && lvl.levelNumber > 1) {
+									userStageMode = 'video';
+								}
+							}}
+							data-active={isActive}
+							aria-pressed={isActive}
+							class="neu-btn flex cursor-pointer items-center justify-between gap-2 rounded-xl px-3 py-2 text-left text-xs"
+						>
+							<div class="min-w-0">
+								<div class="flex items-center gap-1.5">
+									<Star
+										class="h-3 w-3 shrink-0 {(
+											target.mode === 'inventory' ? lvl.unlocked : lvl.levelNumber === 1
+										)
+											? 'fill-amber-400 text-amber-400'
+											: 'text-slate-400'}"
+									/>
+									<span class="font-mono text-[10px] font-bold text-slate-300">
+										LVL {lvl.levelNumber}
+									</span>
+								</div>
+								<p class="mt-0.5 truncate font-semibold text-white">{lvl.effectLabel}</p>
 							</div>
-							<p class="mt-0.5 truncate font-semibold text-white">{lvl.effectLabel}</p>
-						</div>
-						{#if lvl.streamedVideo}
-							<Play class="h-3 w-3 shrink-0 text-neu-cyan" />
-						{/if}
-					</button>
-				{/each}
+							{#if lvl.streamedVideo}
+								<Play class="h-3 w-3 shrink-0 text-neu-cyan" />
+							{/if}
+						</button>
+					{/each}
+				</div>
 			</div>
-		</div>
-	{/if}
+		{/if}
+	</div>
 </div>
 
 <style>

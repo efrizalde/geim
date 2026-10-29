@@ -41,7 +41,7 @@
 		if (event.target === dialog) dialog.close();
 	}}
 	aria-label="{target.skinName} 360 degree and level inspector"
-	class="geim-dialog m-auto max-h-[92dvh] w-[calc(100%_-_1.5rem)] max-w-4xl overflow-y-auto overscroll-contain rounded-2xl bg-transparent p-0 text-slate-200"
+	class="geim-dialog fixed inset-0 m-auto max-h-[92dvh] w-[calc(100%_-_1.5rem)] max-w-4xl overflow-hidden rounded-2xl bg-transparent p-0 text-slate-200 sm:overflow-y-auto"
 >
 	{#if Inspector}
 		<Inspector {target} onClose={() => dialog.close()} />
