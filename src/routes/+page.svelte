@@ -35,14 +35,7 @@
 
 	type ConnectMode = 'redirect' | 'ssid' | 'credentials';
 
-	const MODULE_ORDER: Record<ModuleKey, number> = {
-		tracker: 0,
-		shop: 1,
-		inventory: 2
-	};
-
 	let activeModule = $state<ModuleKey>('tracker');
-	let tabDirection = $state<1 | -1>(1);
 	let showConnectPanel = $state(false);
 	let dismissedForm = $state<unknown>(null);
 	let connectMode = $state<ConnectMode>('redirect');
@@ -90,7 +83,6 @@
 
 	function selectModule(mod: ModuleKey) {
 		if (mod !== activeModule) {
-			tabDirection = MODULE_ORDER[mod] >= MODULE_ORDER[activeModule] ? 1 : -1;
 			activeModule = mod;
 		}
 		if (browser) {
@@ -948,7 +940,6 @@
 			{#key activeModule}
 				<div
 					in:fly={{
-						x: tabDirection * 22,
 						y: 8,
 						duration: 280,
 						easing: cubicOut

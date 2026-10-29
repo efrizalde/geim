@@ -5,6 +5,7 @@
 		ArrowLeft,
 		ArrowRight,
 		CheckCircle2,
+		ChevronDown,
 		Clock3,
 		Search,
 		ShieldCheck,
@@ -90,15 +91,6 @@
 			>
 		</div>
 	{:else}
-		<nav
-			aria-label="Admin sections"
-			class="neu-well-sm mt-7 flex w-fit max-w-full gap-1 overflow-x-auto rounded-xl p-1 text-sm font-semibold"
-		>
-			<a class="admin-section-link" href="#overview">Overview</a>
-			<a class="admin-section-link" href="#users">Users</a>
-			<a class="admin-section-link" href="#history">History</a>
-		</nav>
-
 		<div id="overview" class="scroll-mt-24 pt-7">
 			<div class="grid gap-4 lg:grid-cols-[minmax(0,1.35fr)_minmax(320px,1fr)]">
 				<section
@@ -348,12 +340,13 @@
 			</nav>
 		</section>
 
-		<section
+		<details
 			id="history"
 			aria-labelledby="audit-title"
 			class="glass-neu mt-5 scroll-mt-24 overflow-hidden rounded-2xl"
+			open={data.audit.length > 0 || data.auditPage > 1}
 		>
-			<div class="flex items-start gap-3 p-5 sm:p-6">
+			<summary class="flex cursor-pointer items-start gap-3 p-5 sm:p-6">
 				<div class="neu-well-sm rounded-xl border border-neu-accent/20 p-2 text-neu-accent">
 					<ShieldCheck class="h-4 w-4" aria-hidden="true" />
 				</div>
@@ -361,7 +354,8 @@
 					<h2 id="audit-title" class="text-base font-bold text-white">Registration history</h2>
 					<p class="mt-1 text-sm text-slate-400">Changes made to registration settings</p>
 				</div>
-			</div>
+				<ChevronDown class="mt-1 ml-auto h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" />
+			</summary>
 			<div class="divide-y divide-white/8 border-t border-white/8 px-5 sm:px-6">
 				{#each data.audit as entry (entry.id)}<div
 						class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 py-4 text-sm"
@@ -397,25 +391,16 @@
 							>{/if}
 					</div>
 				</nav>{/if}
-		</section>
+		</details>
 	{/if}
 </main>
 
 <style>
-	.admin-section-link {
-		display: inline-flex;
-		align-items: center;
-		min-height: 44px;
-		padding: 0 14px;
-		border-radius: 8px;
-		color: #cbd5e1;
-		white-space: nowrap;
-	}
-	.admin-section-link:hover {
-		color: white;
-		background: rgb(255 255 255 / 0.04);
+	details[open] summary > :global(svg:last-child) {
+		transform: rotate(180deg);
 	}
 	.admin-page :is(a, button, input):focus-visible,
+	.admin-page summary:focus-visible,
 	.admin-link:focus-visible {
 		outline: 2px solid #67e8f9;
 		outline-offset: 3px;
