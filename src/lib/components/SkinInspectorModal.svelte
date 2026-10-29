@@ -134,8 +134,8 @@
 
 <div
 	bind:this={modalPanelEl}
-	class="glass-neu relative my-auto flex w-full max-w-4xl flex-col gap-4 rounded-t-2xl bg-[#0c111d]/95 p-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:rounded-2xl sm:p-6"
-	style="border-color: {spec.borderBaseRgba}; box-shadow: 0 28px 64px -12px rgba(0,0,0,0.92), 0 0 42px -8px {spec.glowRgba};"
+	class="glass-neu inspector-panel relative my-auto flex w-full max-w-4xl flex-col gap-4 rounded-2xl p-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:p-6"
+	style="--inspector-border: {spec.borderBaseRgba}; --inspector-glow: {spec.glowRgba};"
 >
 	<!-- Top Specular Rarity Line -->
 	<div
@@ -391,3 +391,20 @@
 		</div>
 	{/if}
 </div>
+
+<style>
+	.inspector-panel {
+		background: #101623;
+		border-color: rgba(255, 255, 255, 0.12);
+		box-shadow: 0 20px 50px -12px rgba(0, 0, 0, 0.85);
+	}
+	@media (min-width: 640px) {
+		.inspector-panel {
+			background: linear-gradient(155deg, rgba(22, 29, 44, 0.72), rgba(12, 16, 26, 0.82));
+			border-color: var(--inspector-border);
+			box-shadow:
+				0 28px 64px -12px rgba(0, 0, 0, 0.92),
+				0 0 42px -8px var(--inspector-glow);
+		}
+	}
+</style>
