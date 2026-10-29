@@ -704,92 +704,98 @@
 	}
 </script>
 
-<div
-	role="application"
-	aria-label="Interactive 360 degree weapon viewer for {label}. Drag horizontally or vertically to rotate 360 degrees, scroll to zoom."
-	onpointerdown={onPointerDown}
-	onpointermove={onPointerMove}
-	onpointerup={onPointerUp}
-	onpointercancel={onPointerUp}
-	onwheel={onWheel}
-	class="relative aspect-16/10 w-full touch-none overflow-hidden select-none sm:aspect-video {isDragging
-		? 'cursor-grabbing'
-		: 'cursor-grab'}"
-	style="background: radial-gradient(ellipse at 50% 48%, {spec.glowStrongRgba} 0%, rgba(11, 16, 28, 0.94) 55%, #05070d 100%);"
->
-	<!-- Subtle Architectural Tactical Grid Backdrop -->
+<div class="relative">
 	<div
-		class="pointer-events-none absolute inset-0 opacity-25"
-		style="background-image: linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px); background-size: 36px 36px;"
-	></div>
-
-	<!-- Three.js WebGL Stage Container -->
-	{#if !webglFallback}
-		<div bind:this={stageEl} class="absolute inset-0"></div>
-	{:else}
-		<!-- Graceful CSS 3D Preserve-3D Turntable Fallback -->
-		<div class="absolute inset-0 flex items-center justify-center p-8" style="perspective: 1100px;">
-			{#if imageUrl}
-				<img
-					src={imageUrl}
-					alt={label}
-					draggable="false"
-					class="max-h-56 w-full object-contain drop-shadow-[0_24px_32px_rgba(0,0,0,0.88)]"
-					style="transform: scale({displayZoom}) rotateX({-displayPitchDeg}deg) rotateY({displayYawDeg}deg);"
-				/>
-			{/if}
-		</div>
-	{/if}
-
-	<!-- Loading Shimmer Pill -->
-	{#if loadingTexture}
+		role="application"
+		aria-label="Interactive 360 degree weapon viewer for {label}. Drag horizontally or vertically to rotate 360 degrees, scroll to zoom."
+		onpointerdown={onPointerDown}
+		onpointermove={onPointerMove}
+		onpointerup={onPointerUp}
+		onpointercancel={onPointerUp}
+		onwheel={onWheel}
+		class="relative aspect-16/10 w-full touch-none overflow-hidden select-none sm:aspect-video {isDragging
+			? 'cursor-grabbing'
+			: 'cursor-grab'}"
+		style="background: radial-gradient(ellipse at 50% 48%, {spec.glowStrongRgba} 0%, rgba(11, 16, 28, 0.94) 55%, #05070d 100%);"
+	>
+		<!-- Subtle Architectural Tactical Grid Backdrop -->
 		<div
-			class="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/25 backdrop-blur-[2px]"
+			class="pointer-events-none absolute inset-0 opacity-25"
+			style="background-image: linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px); background-size: 36px 36px;"
+		></div>
+
+		<!-- Three.js WebGL Stage Container -->
+		{#if !webglFallback}
+			<div bind:this={stageEl} class="absolute inset-0"></div>
+		{:else}
+			<!-- Graceful CSS 3D Preserve-3D Turntable Fallback -->
+			<div
+				class="absolute inset-0 flex items-center justify-center p-8"
+				style="perspective: 1100px;"
+			>
+				{#if imageUrl}
+					<img
+						src={imageUrl}
+						alt={label}
+						draggable="false"
+						class="max-h-56 w-full object-contain drop-shadow-[0_24px_32px_rgba(0,0,0,0.88)]"
+						style="transform: scale({displayZoom}) rotateX({-displayPitchDeg}deg) rotateY({displayYawDeg}deg);"
+					/>
+				{/if}
+			</div>
+		{/if}
+
+		<!-- Loading Shimmer Pill -->
+		{#if loadingTexture}
+			<div
+				class="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/25 backdrop-blur-[2px]"
+			>
+				<span
+					class="rounded-full border border-white/15 bg-[#090d16]/90 px-3.5 py-1.5 font-mono text-[11px] font-semibold text-neu-cyan shadow-lg"
+				>
+					Loading High-Res 360° Render…
+				</span>
+			</div>
+		{/if}
+
+		<!-- Top-Left Live 360° Telemetry HUD -->
+		<div
+			class="pointer-events-none absolute top-3 left-3 z-20 hidden flex-wrap items-center gap-2 sm:flex"
 		>
 			<span
-				class="rounded-full border border-white/15 bg-[#090d16]/90 px-3.5 py-1.5 font-mono text-[11px] font-semibold text-neu-cyan shadow-lg"
+				class="inline-flex items-center gap-1.5 rounded-xl border bg-[#070a12]/85 px-2.5 py-1 font-mono text-[10px] font-bold tracking-wider text-white uppercase backdrop-blur-md"
+				style="border-color: {spec.borderBaseRgba};"
 			>
-				Loading High-Res 360° Render…
+				<Rotate3d class="h-3.5 w-3.5" style="color: {spec.primaryHex}" />
+				<span>360° Studio</span>
+			</span>
+
+			<span
+				class="hidden rounded-xl border border-white/10 bg-[#070a12]/75 px-2.5 py-1 font-mono text-[10px] text-slate-300 tabular-nums backdrop-blur-md sm:inline-block"
+			>
+				YAW {String(displayYawDeg).padStart(3, '0')}° · PITCH {displayPitchDeg >= 0
+					? `+${displayPitchDeg}`
+					: displayPitchDeg}° · {displayZoom.toFixed(1)}×
 			</span>
 		</div>
-	{/if}
 
-	<!-- Top-Left Live 360° Telemetry HUD -->
-	<div class="pointer-events-none absolute top-3 left-3 z-20 flex flex-wrap items-center gap-2">
-		<span
-			class="inline-flex items-center gap-1.5 rounded-xl border bg-[#070a12]/85 px-2.5 py-1 font-mono text-[10px] font-bold tracking-wider text-white uppercase backdrop-blur-md"
-			style="border-color: {spec.borderBaseRgba};"
+		<!-- Top-Right Drag Hint -->
+		<div
+			class="pointer-events-none absolute top-3 right-3 z-20 hidden rounded-xl border border-white/10 bg-[#070a12]/75 px-2.5 py-1 font-mono text-[10px] text-slate-400 backdrop-blur-md md:block"
 		>
-			<Rotate3d class="h-3.5 w-3.5" style="color: {spec.primaryHex}" />
-			<span>360° Studio</span>
-		</span>
-
-		<span
-			class="hidden rounded-xl border border-white/10 bg-[#070a12]/75 px-2.5 py-1 font-mono text-[10px] text-slate-300 tabular-nums backdrop-blur-md sm:inline-block"
-		>
-			YAW {String(displayYawDeg).padStart(3, '0')}° · PITCH {displayPitchDeg >= 0
-				? `+${displayPitchDeg}`
-				: displayPitchDeg}° · {displayZoom.toFixed(1)}×
-		</span>
+			Drag to rotate 360° · Scroll to zoom
+		</div>
 	</div>
-
-	<!-- Top-Right Drag Hint -->
-	<div
-		class="pointer-events-none absolute top-3 right-3 z-20 hidden rounded-xl border border-white/10 bg-[#070a12]/75 px-2.5 py-1 font-mono text-[10px] text-slate-400 backdrop-blur-md md:block"
-	>
-		Drag to rotate 360° · Scroll to zoom
-	</div>
-
 	<!-- Bottom Floating Tactile Camera & Turntable Controls -->
 	<div
-		class="pointer-events-none absolute right-3 bottom-3 left-3 z-20 flex flex-wrap items-center justify-between gap-2"
+		class="flex items-center justify-between gap-1 bg-[#090d16] px-2 py-1 sm:pointer-events-none sm:absolute sm:right-3 sm:bottom-3 sm:left-3 sm:z-20 sm:flex-wrap sm:gap-2 sm:bg-transparent sm:p-0"
 	>
 		<div class="pointer-events-auto flex items-center gap-1.5">
 			<button
 				type="button"
 				onclick={toggleAutoSpin}
 				data-active={autoSpin}
-				class="neu-btn flex cursor-pointer items-center gap-1.5 rounded-xl px-2.5 py-1.5 font-mono text-[10px] font-bold"
+				class="neu-btn flex min-h-11 cursor-pointer items-center gap-1.5 rounded-xl px-2 py-1.5 font-mono text-[10px] font-bold sm:min-h-0 sm:px-2.5"
 				title={autoSpin ? 'Pause 360° turntable' : 'Start 360° turntable'}
 			>
 				{#if autoSpin}
@@ -804,11 +810,12 @@
 			<button
 				type="button"
 				onclick={spinFull360}
-				class="neu-btn flex cursor-pointer items-center gap-1 rounded-xl px-2.5 py-1.5 font-mono text-[10px] font-bold"
+				class="neu-btn flex h-11 w-11 cursor-pointer items-center justify-center gap-1 rounded-xl font-mono text-[10px] font-bold sm:h-auto sm:w-auto sm:px-2.5 sm:py-1.5"
 				title="Perform a full 360° showcase spin"
+				aria-label="Perform a full 360° showcase spin"
 			>
 				<Rotate3d class="h-3 w-3 text-amber-300" />
-				<span>360° Spin</span>
+				<span class="hidden sm:inline">360° Spin</span>
 			</button>
 
 			<button
@@ -826,7 +833,7 @@
 			<button
 				type="button"
 				onclick={() => stepZoom(-0.22)}
-				class="neu-btn cursor-pointer rounded-xl p-1.5 text-slate-300 hover:text-white"
+				class="neu-btn flex h-11 w-11 cursor-pointer items-center justify-center rounded-xl text-slate-300 hover:text-white sm:h-auto sm:w-auto sm:p-1.5"
 				title="Zoom out"
 				aria-label="Zoom out"
 			>
@@ -835,7 +842,7 @@
 			<button
 				type="button"
 				onclick={() => stepZoom(0.22)}
-				class="neu-btn cursor-pointer rounded-xl p-1.5 text-slate-300 hover:text-white"
+				class="neu-btn flex h-11 w-11 cursor-pointer items-center justify-center rounded-xl text-slate-300 hover:text-white sm:h-auto sm:w-auto sm:p-1.5"
 				title="Zoom in"
 				aria-label="Zoom in"
 			>
@@ -844,7 +851,7 @@
 			<button
 				type="button"
 				onclick={resetCamera}
-				class="neu-btn cursor-pointer rounded-xl p-1.5 text-slate-300 hover:text-white"
+				class="neu-btn flex h-11 w-11 cursor-pointer items-center justify-center rounded-xl text-slate-300 hover:text-white sm:h-auto sm:w-auto sm:p-1.5"
 				title="Reset camera angle & zoom"
 				aria-label="Reset camera"
 			>

@@ -134,7 +134,7 @@
 
 <div
 	bind:this={modalPanelEl}
-	class="glass-neu relative my-auto flex w-full max-w-4xl flex-col gap-4 rounded-2xl p-4 sm:p-6"
+	class="glass-neu relative my-auto flex w-full max-w-4xl flex-col gap-4 rounded-t-2xl bg-[#0c111d]/95 p-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:rounded-2xl sm:p-6"
 	style="border-color: {spec.borderBaseRgba}; box-shadow: 0 28px 64px -12px rgba(0,0,0,0.92), 0 0 42px -8px {spec.glowRgba};"
 >
 	<!-- Top Specular Rarity Line -->
@@ -143,9 +143,31 @@
 		style="background: linear-gradient(90deg, transparent, {spec.primaryHex}, transparent);"
 	></div>
 
+	<div
+		class="sticky top-[-1rem] z-30 -mx-4 -mt-4 flex items-start justify-between gap-3 border-b border-white/10 bg-[#0c111d]/95 px-4 pt-[max(1rem,env(safe-area-inset-top))] pb-3 backdrop-blur-xl sm:hidden"
+	>
+		<div class="min-w-0">
+			<p
+				class="font-mono text-[10px] font-bold tracking-wider uppercase"
+				style="color: {spec.primaryHex}"
+			>
+				{target.tier?.devName ?? 'Battle Pass / Event'} · {target.weaponName}
+			</p>
+			<h3 class="mt-1 font-display text-lg leading-tight font-bold text-white">
+				{target.skinName}
+			</h3>
+		</div>
+		<button
+			type="button"
+			data-inspector-close="mobile"
+			onclick={onClose}
+			class="neu-btn flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-slate-200"
+			aria-label="Close inspector"><X class="h-5 w-5" /></button
+		>
+	</div>
 	<!-- Header: Tier Badge + Title + Price Pill + 360/Video Mode Switcher + Close -->
 	<div class="flex flex-wrap items-start justify-between gap-3">
-		<div class="min-w-0">
+		<div class="hidden min-w-0 sm:block">
 			<div class="flex flex-wrap items-center gap-2">
 				{#if target.tier?.iconUrl}
 					<img src={target.tier.iconUrl} alt={target.tier.name} class="h-4 w-4 object-contain" />
@@ -217,9 +239,9 @@
 
 			<button
 				type="button"
-				data-inspector-close
+				data-inspector-close="desktop"
 				onclick={onClose}
-				class="neu-btn cursor-pointer rounded-xl p-2 text-slate-400 hover:text-white"
+				class="neu-btn hidden cursor-pointer rounded-xl p-2 text-slate-400 hover:text-white sm:block"
 				aria-label="Close inspector"
 			>
 				<X class="h-4 w-4" />
@@ -282,7 +304,7 @@
 			<p class="font-mono text-[10px] font-semibold tracking-wider text-slate-400 uppercase">
 				Color Variants ({target.chromas.length}) · Click to swap model
 			</p>
-			<div class="flex flex-wrap gap-2">
+			<div class="flex gap-2 overflow-x-auto pb-1 sm:flex-wrap sm:overflow-visible sm:pb-0">
 				{#each target.chromas as chroma (chroma.uuid)}
 					{@const isActive = selection.kind === 'chroma' && selection.chromaUuid === chroma.uuid}
 					<button
@@ -294,22 +316,32 @@
 							}
 						}}
 						data-active={isActive}
-						class="neu-btn flex cursor-pointer items-center gap-2 rounded-xl px-3 py-1.5 text-xs"
+						aria-label="{chroma.name}{target.mode === 'inventory' && !chroma.unlocked
+							? ', locked'
+							: ''}"
+						aria-pressed={isActive}
+						class="neu-btn relative flex h-11 min-w-11 shrink-0 cursor-pointer items-center justify-center gap-2 rounded-xl p-2 text-xs sm:h-auto sm:min-w-0 sm:px-3 sm:py-1.5"
 					>
 						{#if chroma.swatch}
 							<img
 								src={chroma.swatch}
 								alt=""
-								class="h-4 w-4 rounded-sm border border-white/20 object-cover"
+								class="h-7 w-7 rounded-md border border-white/20 object-cover sm:h-4 sm:w-4 sm:rounded-sm"
 							/>
 						{/if}
-						<span class="max-w-44 truncate font-medium">{chroma.name}</span>
+						{#if !chroma.swatch}<span class="sm:hidden">{chroma.name.slice(0, 1)}</span>{/if}
+						<span class="hidden max-w-44 truncate font-medium sm:inline">{chroma.name}</span>
 						{#if target.mode === 'inventory' && !chroma.unlocked}
-							<Lock class="h-3 w-3 text-slate-500" />
+							<Lock
+								class="absolute right-0 bottom-0 h-3 w-3 text-slate-300 sm:static sm:text-slate-500"
+							/>
 						{/if}
 					</button>
 				{/each}
 			</div>
+			<p class="text-xs text-slate-300 sm:hidden">
+				{selection.kind === 'chroma' ? activeMedia.label : 'Select a color variant'}
+			</p>
 		</div>
 	{/if}
 
@@ -319,7 +351,7 @@
 			<p class="font-mono text-[10px] font-semibold tracking-wider text-slate-400 uppercase">
 				Upgrade Levels ({target.levels.length})
 			</p>
-			<div class="grid gap-2 sm:grid-cols-2 md:grid-cols-4">
+			<div class="grid grid-cols-2 gap-2 md:grid-cols-4">
 				{#each target.levels as lvl (lvl.uuid)}
 					{@const isActive =
 						selection.kind === 'level' && selection.levelNumber === lvl.levelNumber}
@@ -332,6 +364,7 @@
 							}
 						}}
 						data-active={isActive}
+						aria-pressed={isActive}
 						class="neu-btn flex cursor-pointer items-center justify-between gap-2 rounded-xl px-3 py-2 text-left text-xs"
 					>
 						<div class="min-w-0">

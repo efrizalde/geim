@@ -15,7 +15,14 @@
 				if (cancelled) return;
 				Inspector = module.default;
 				await tick();
-				if (!cancelled) dialog.querySelector<HTMLButtonElement>('[data-inspector-close]')?.focus();
+				if (!cancelled)
+					dialog
+						.querySelector<HTMLButtonElement>(
+							window.matchMedia('(min-width: 640px)').matches
+								? '[data-inspector-close="desktop"]'
+								: '[data-inspector-close="mobile"]'
+						)
+						?.focus();
 			})
 			.catch(() => {
 				if (!cancelled) failed = true;
@@ -33,7 +40,7 @@
 		if (event.target === dialog) dialog.close();
 	}}
 	aria-label="{target.skinName} 360 degree and level inspector"
-	class="geim-dialog m-auto max-h-[92dvh] w-[calc(100%_-_1.5rem)] max-w-4xl overflow-y-auto rounded-2xl bg-transparent p-0 text-slate-200"
+	class="geim-dialog mt-auto mb-0 max-h-[94dvh] w-full max-w-4xl overflow-y-auto overscroll-contain rounded-t-2xl bg-transparent p-0 text-slate-200 sm:m-auto sm:max-h-[92dvh] sm:w-[calc(100%_-_1.5rem)] sm:rounded-2xl"
 >
 	{#if Inspector}
 		<Inspector {target} onClose={() => dialog.close()} />
