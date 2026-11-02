@@ -13,13 +13,11 @@
 
 	let { data }: PageProps = $props();
 	let activeModule = $state<ModuleKey>('inventory');
-	let tabDirection = $state<1 | -1>(1);
 	let inspectorTarget = $state<SkinInspectorPayload | null>(null);
 	const snapshot = $derived(data.snapshot);
 
 	function selectModule(mod: ModuleKey) {
 		if (mod !== activeModule) {
-			tabDirection = mod === 'tracker' ? 1 : -1;
 			activeModule = mod;
 		}
 	}
@@ -79,7 +77,6 @@
 	{#key activeModule}
 		<div
 			in:fly={{
-				x: tabDirection * 22,
 				y: 8,
 				duration: 280,
 				easing: cubicOut
