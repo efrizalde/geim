@@ -2,13 +2,52 @@
 	import { enhance } from '$app/forms';
 	import { resolve } from '$app/paths';
 	import { Eye, EyeOff, KeyRound, Lock, User } from '@lucide/svelte';
+	import { authClient } from '#lib/auth-client.js';
 	import BrandLogo from '#lib/components/BrandLogo.svelte';
 	import type { PageProps } from './$types';
 
-	let { form }: PageProps = $props();
+	let { data, form }: PageProps = $props();
 
 	let showPassword = $state(false);
 	let submitting = $state(false);
+	let username = $state('');
+	let passkeyError = $state('');
+	let passkeyBusy = $state(false);
+	let googleBusy = $state(false);
+
+	async function signInWithPasskey() {
+		passkeyBusy = true;
+		passkeyError = '';
+		try {
+			const result = await authClient.signIn.passkey();
+			if (result.error) {
+				throw new Error(result.error.message || 'Passkey sign-in failed. Try again.');
+			}
+			window.location.assign(resolve('/'));
+		} catch (err) {
+			passkeyError = err instanceof Error ? err.message : 'Passkey sign-in failed.';
+		} finally {
+			passkeyBusy = false;
+		}
+	}
+
+	async function signInWithGoogle() {
+		googleBusy = true;
+		passkeyError = '';
+		try {
+			const result = await authClient.signIn.social({
+				provider: 'google',
+				callbackURL: resolve('/'),
+				errorCallbackURL: resolve('/login')
+			});
+			if (result.error) {
+				throw new Error(result.error.message || 'Could not start Google sign-in.');
+			}
+		} catch (err) {
+			passkeyError = err instanceof Error ? err.message : 'Google sign-in failed.';
+			googleBusy = false;
+		}
+	}
 </script>
 
 <svelte:head>
@@ -33,12 +72,12 @@
 			Sign in with your geim username and password to open your saved Riot accounts.
 		</p>
 
-		{#if form?.error}
+		{#if form?.error || data.oauthError}
 			<div
 				role="alert"
 				class="neu-well rounded-xl border border-rose-500/35 px-4 py-3 text-xs font-medium text-rose-300"
 			>
-				{form.error}
+				{form?.error ?? data.oauthError}
 			</div>
 		{/if}
 
@@ -60,6 +99,7 @@
 					<input
 						id="username"
 						name="username"
+						bind:value={username}
 						required
 						autocomplete="username"
 						autocapitalize="none"
@@ -110,6 +150,27 @@
 				<span>{submitting ? 'Logging in...' : 'Log In'}</span>
 			</button>
 		</form>
+		{#if passkeyError}<p role="alert" class="text-xs text-rose-300">{passkeyError}</p>{/if}
+		{#if data.passkeyEnabled || data.googleEnabled}<div
+				class="flex flex-col gap-2 border-t border-white/10 pt-4"
+			>
+				{#if data.passkeyEnabled}<button
+						type="button"
+						onclick={signInWithPasskey}
+						disabled={passkeyBusy || googleBusy}
+						class="neu-btn min-h-11 rounded-xl px-4 text-sm font-semibold disabled:opacity-50"
+						>{passkeyBusy ? 'Waiting for passkey…' : 'Sign in with passkey'}</button
+					>{/if}{#if data.googleEnabled}<button
+						type="button"
+						onclick={signInWithGoogle}
+						disabled={googleBusy || passkeyBusy}
+						class="neu-btn flex min-h-11 items-center justify-center rounded-xl px-4 text-sm font-semibold disabled:opacity-50"
+						>{googleBusy ? 'Redirecting to Google…' : 'Sign in with Google'}</button
+					>{/if}
+				<p class="text-xs text-slate-400">
+					Link a passkey or Google account from account settings first.
+				</p>
+			</div>{/if}
 		<p class="text-center text-sm text-slate-400">
 			New to geim? <a href={resolve('/register')} class="text-neu-cyan underline"
 				>Create an account</a

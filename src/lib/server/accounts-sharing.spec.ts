@@ -1,7 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { hashPassword, verifyPassword } from './auth/password';
-import { registerUser, verifyUserCredentials } from './auth/session';
+import {
+	LEGACY_SESSION_COOKIE_NAME,
+	getAuth,
+	registerWithUsername,
+	resolveRequestSession,
+	signInWithUsername
+} from './auth/session';
 import { schema } from './db';
 import { loadDashboardView } from './providers/valorant/service';
 import type { HydratedMatchItem } from './providers/valorant/tracker';
@@ -13,8 +19,28 @@ import {
 	summarizeSharedStats
 } from './sharing';
 
-const db = vi.hoisted(() => ({ select: vi.fn(), insert: vi.fn() }));
+const db = vi.hoisted(() => ({
+	select: vi.fn(),
+	insert: vi.fn(),
+	update: vi.fn(),
+	delete: vi.fn()
+}));
 vi.mock('$app/env', () => ({ dev: true }));
+vi.mock('$app/env/private', () => ({
+	AUTH_ORIGIN: 'http://localhost:5173',
+	BETTER_AUTH_SECRET: 'test-better-auth-secret-key-0123456789abcdef',
+	ENCRYPTION_MASTER_KEY: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+	GOOGLE_CLIENT_ID: 'google-client-id',
+	GOOGLE_CLIENT_SECRET: 'google-client-secret'
+}));
+vi.mock('$app/server', () => ({
+	getRequestEvent: () => {
+		throw new Error('Not in request context');
+	}
+}));
+vi.mock('./auth/shared-rate-limit', () => ({
+	consumeLoginAttempt: vi.fn().mockResolvedValue(true)
+}));
 vi.mock('./db', async () => ({
 	getDb: () => db,
 	schema: await import('./db/schema')
@@ -72,8 +98,18 @@ function selection(rows: unknown[]) {
 	const query = {
 		from: vi.fn().mockReturnThis(),
 		innerJoin: vi.fn().mockReturnThis(),
-		where: vi.fn().mockReturnThis(),
-		limit: vi.fn().mockResolvedValue(rows)
+		where: vi.fn().mockImplementation(() => {
+			const res = Promise.resolve(rows) as Promise<unknown[]> & {
+				limit: ReturnType<typeof vi.fn>;
+				orderBy: ReturnType<typeof vi.fn>;
+			};
+			res.limit = vi.fn().mockResolvedValue(rows);
+			res.orderBy = vi.fn().mockResolvedValue(rows);
+			return res;
+		}),
+		limit: vi.fn().mockReturnThis(),
+		offset: vi.fn().mockReturnThis(),
+		orderBy: vi.fn().mockReturnThis()
 	};
 	db.select.mockReturnValueOnce(query);
 	return query;
@@ -90,49 +126,202 @@ function insertion(rows: unknown[]) {
 	return query;
 }
 
+function updation(rows: unknown[] = []) {
+	const query = {
+		set: vi.fn().mockReturnThis(),
+		where: vi.fn().mockReturnThis(),
+		returning: vi.fn().mockResolvedValue(rows)
+	};
+	db.update.mockReturnValueOnce(query);
+	return query;
+}
+
 beforeEach(() => vi.resetAllMocks());
 
-describe('username-based accounts', () => {
-	it('registers another user without an owner-exists gate and stores only a password hash', async () => {
-		const query = insertion([{ id: 'second-user' }]);
-		expect(await registerUser('second_player', 'test-password')).toEqual({ id: 'second-user' });
-		const values = query.values.mock.calls[0][0];
-		expect(values.username).toBe('second_player');
-		expect(values.passwordHash).not.toBe('test-password');
-		expect(await verifyPassword('test-password', values.passwordHash)).toBe(true);
-		expect(query.onConflictDoNothing).toHaveBeenCalledWith({ target: schema.users.username });
-		expect(db.select).not.toHaveBeenCalled();
+describe('username-based Better Auth accounts', () => {
+	it('passes Better Auth Drizzle schema validation and registers username-only accounts with 4-digit PINs', async () => {
+		const ctx = await getAuth().$context;
+		expect(ctx.explicitSchemaCheck).toBeDefined();
+		await expect(ctx.explicitSchemaCheck!()).resolves.toBeUndefined();
+
+		const now = new Date();
+		const userId = '11111111-1111-4111-8111-111111111111';
+		// 1. username plugin uniqueness check -> no existing user
+		selection([]);
+		// 2. signUpEmail email uniqueness check -> no existing user
+		selection([]);
+		// 3. insert into users
+		const userInsert = insertion([
+			{
+				id: userId,
+				username: 'second_player',
+				displayUsername: 'second_player',
+				name: 'second_player',
+				email: `${userId}@users.geim.local`,
+				emailVerified: false,
+				image: null,
+				passwordHash: '',
+				displayCurrency: 'IDR',
+				purchaseRegion: 'ID',
+				ownerPasswordReady: false,
+				createdAt: now,
+				updatedAt: now
+			}
+		]);
+		// 4. insert credential account
+		const accountInsert = insertion([
+			{
+				id: '22222222-2222-4222-8222-222222222222',
+				accountId: userId,
+				providerId: 'credential',
+				userId,
+				password: 'scryptv1$hashed',
+				createdAt: now,
+				updatedAt: now
+			}
+		]);
+		// 5. sync password_hash onto users
+		updation([]);
+		// 6. insert session
+		insertion([
+			{
+				id: '33333333-3333-4333-8333-333333333333',
+				userId,
+				token: 'session-token',
+				expiresAt: new Date(Date.now() + 86400_000),
+				createdAt: now,
+				updatedAt: now
+			}
+		]);
+
+		const cookies = { set: vi.fn(), get: vi.fn(), delete: vi.fn() };
+		const req = new Request('http://localhost:5173/register', { method: 'POST' });
+		expect(await registerWithUsername('second_player', '2202', req, cookies as never)).toEqual({
+			id: userId
+		});
+
+		const userValues = userInsert.values.mock.calls[0][0];
+		expect(userValues.username).toBe('second_player');
+		expect(userValues.email).toMatch(/@users\.geim\.local$/);
+		const accountValues = accountInsert.values.mock.calls[0][0];
+		expect(accountValues.providerId).toBe('credential');
+		expect(await verifyPassword('2202', accountValues.password)).toBe(true);
+		expect(cookies.set).toHaveBeenCalled();
 	});
 
 	it('reports a duplicate username without replacing the existing user', async () => {
-		insertion([]);
-		expect(await registerUser('owner', 'test-password')).toBeNull();
+		selection([{ id: 'existing-id', username: 'owner', email: 'owner@users.geim.local' }]);
+		const cookies = { set: vi.fn(), get: vi.fn(), delete: vi.fn() };
+		const req = new Request('http://localhost:5173/register', { method: 'POST' });
+		expect(await registerWithUsername('owner', '2202', req, cookies as never)).toBeNull();
+		expect(db.insert).not.toHaveBeenCalled();
 	});
 
-	it('looks up the supplied username rather than authenticating the first user', async () => {
-		const query = selection([
+	it('authenticates existing password hashes via Better Auth username sign-in and sets session cookies', async () => {
+		const now = new Date();
+		const userId = '11111111-1111-4111-8111-111111111111';
+		const storedHash = await hashPassword('2202');
+		const userQuery = selection([
 			{
-				id: 'second-user',
+				id: userId,
 				username: 'second_player',
-				passwordHash: await hashPassword('test-password')
+				displayUsername: 'second_player',
+				name: 'second_player',
+				email: `${userId}@users.geim.local`,
+				emailVerified: false,
+				displayCurrency: 'IDR',
+				purchaseRegion: 'ID',
+				createdAt: now,
+				updatedAt: now
 			}
 		]);
-		expect(await verifyUserCredentials('second_player', 'test-password')).toEqual({
-			id: 'second-user',
+		selection([
+			{
+				id: 'acc-1',
+				userId,
+				accountId: userId,
+				providerId: 'credential',
+				password: storedHash,
+				createdAt: now,
+				updatedAt: now
+			}
+		]);
+		insertion([
+			{
+				id: 'sess-1',
+				userId,
+				token: 'tok-1',
+				expiresAt: new Date(Date.now() + 86400_000),
+				createdAt: now,
+				updatedAt: now
+			}
+		]);
+
+		const cookies = { set: vi.fn(), get: vi.fn(), delete: vi.fn() };
+		const req = new Request('http://localhost:5173/login', { method: 'POST' });
+		expect(await signInWithUsername('second_player', '2202', req, cookies as never)).toEqual({
+			id: userId,
 			username: 'second_player'
 		});
-		const sql = new PgDialect().sqlToQuery(query.where.mock.calls[0][0]);
+		const sql = new PgDialect().sqlToQuery(userQuery.where.mock.calls[0][0]);
 		expect(sql.sql).toContain('"users"."username"');
 		expect(sql.params).toEqual(['second_player']);
+		expect(cookies.set).toHaveBeenCalled();
 	});
 
-	it('rejects both an unknown user and a wrong password', async () => {
+	it('rejects unknown users and wrong passwords, and clears legacy geim_session cookies', async () => {
+		const cookies = {
+			set: vi.fn(),
+			get: vi.fn((name: string) => (name === LEGACY_SESSION_COOKIE_NAME ? 'old-token' : undefined)),
+			delete: vi.fn()
+		};
+		const req = new Request('http://localhost:5173/login', { method: 'POST' });
 		selection([]);
-		expect(await verifyUserCredentials('missing', 'test-password')).toBeNull();
-		selection([
-			{ id: 'owner', username: 'owner', passwordHash: await hashPassword('other-password') }
+		expect(await signInWithUsername('missing', '2202', req, cookies as never)).toBeNull();
+
+		const resolved = await resolveRequestSession({
+			request: new Request('http://localhost:5173/'),
+			cookies
+		} as never);
+		expect(resolved).toBeNull();
+		expect(cookies.delete).toHaveBeenCalledWith(
+			LEGACY_SESSION_COOKIE_NAME,
+			expect.objectContaining({ path: '/' })
+		);
+	});
+
+	it('generates passkey authentication options and disables implicit Google sign-up', async () => {
+		const ctx = await getAuth().$context;
+		const googleProvider = ctx.socialProviders.find((p) => p.id === 'google');
+		expect(googleProvider).toBeDefined();
+		expect(googleProvider?.disableImplicitSignUp).toBe(true);
+		expect(googleProvider?.options?.disableSignUp).toBe(true);
+		expect(ctx.options.account?.accountLinking).toMatchObject({
+			enabled: true,
+			allowDifferentEmails: true,
+			disableImplicitLinking: true,
+			updateUserInfoOnLink: false
+		});
+
+		insertion([
+			{
+				id: 'verif-1',
+				identifier: 'challenge-token',
+				value: '{}',
+				expiresAt: new Date(Date.now() + 300_000),
+				createdAt: new Date(),
+				updatedAt: new Date()
+			}
 		]);
-		expect(await verifyUserCredentials('owner', 'test-password')).toBeNull();
+		const res = await getAuth().handler(
+			new Request('http://localhost:5173/api/auth/passkey/generate-authenticate-options', {
+				method: 'GET'
+			})
+		);
+		expect(res.status).toBe(200);
+		const options = (await res.json()) as { challenge?: string; rpId?: string };
+		expect(options.challenge).toEqual(expect.any(String));
+		expect(options.rpId).toBe('localhost');
 	});
 });
 

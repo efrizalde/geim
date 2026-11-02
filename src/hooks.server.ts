@@ -1,11 +1,8 @@
+import { building } from '$app/env';
 import { json, redirect } from '@sveltejs/kit';
 import type { Handle, HandleServerError } from '@sveltejs/kit/hooks';
-import {
-	SESSION_COOKIE_NAME,
-	clearSessionCookie,
-	setSessionCookie,
-	validateAppSessionToken
-} from '#lib/server/auth/session.js';
+import { svelteKitHandler } from 'better-auth/svelte-kit';
+import { getAuth, resolveRequestSession } from '#lib/server/auth/session.js';
 import { safeErrorMessage } from '#lib/server/crypto/redact.js';
 
 export const handle: Handle = async ({ event, resolve }) => {
@@ -20,16 +17,14 @@ export const handle: Handle = async ({ event, resolve }) => {
 		return resolve(event);
 	}
 
-	const token = event.cookies.get(SESSION_COOKIE_NAME);
-	if (token) {
-		const validated = await validateAppSessionToken(token);
-		if (validated) {
-			event.locals.user = validated.user;
-			event.locals.sessionId = validated.session.id;
-			setSessionCookie(event.cookies, token, validated.session.expiresAt);
-		} else {
-			clearSessionCookie(event.cookies);
-		}
+	if (pathname === '/api/auth' || pathname.startsWith('/api/auth/')) {
+		return svelteKitHandler({ auth: getAuth(), event, resolve, building });
+	}
+
+	const validated = await resolveRequestSession(event);
+	if (validated) {
+		event.locals.user = validated.user;
+		event.locals.sessionId = validated.session.id;
 	}
 
 	if (event.locals.user) {

@@ -1,6 +1,6 @@
 import { fail, redirect } from '@sveltejs/kit';
 import { eq } from 'drizzle-orm';
-import { clearSessionCookie, invalidateAppSession } from '#lib/server/auth/session.js';
+import { signOutRequestSession } from '#lib/server/auth/session.js';
 import { getDb, schema } from '#lib/server/db/index.js';
 import { publishSharedProfile } from '#lib/server/sharing.js';
 import { isInstanceOwner } from '#lib/server/admin.js';
@@ -180,11 +180,8 @@ export const actions: Actions = {
 		return { currency };
 	},
 
-	logout: async ({ locals, cookies }) => {
-		if (locals.sessionId) {
-			await invalidateAppSession(locals.sessionId);
-		}
-		clearSessionCookie(cookies);
+	logout: async ({ request, cookies }) => {
+		await signOutRequestSession(request, cookies);
 		redirect(303, '/login');
 	}
 };

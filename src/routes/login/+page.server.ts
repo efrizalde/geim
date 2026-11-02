@@ -1,18 +1,30 @@
 import { fail, redirect } from '@sveltejs/kit';
 import { validatePassword, validateUsername } from '#lib/server/auth/password.js';
 import { consumeLoginAttempt } from '#lib/server/auth/shared-rate-limit.js';
-import {
-	createAppSession,
-	setSessionCookie,
-	verifyUserCredentials
-} from '#lib/server/auth/session.js';
+import { isGoogleEnabled, isPasskeyEnabled, signInWithUsername } from '#lib/server/auth/session.js';
 import type { Actions, PageServerLoad } from './$types';
 
-export const load: PageServerLoad = async ({ locals }) => {
+function mapOAuthError(errorCode: string | null): string | null {
+	if (!errorCode) return null;
+	if (
+		errorCode === 'signup_disabled' ||
+		errorCode === 'account_not_linked' ||
+		errorCode === 'unable_to_create_user'
+	) {
+		return 'This Google account is not linked to a geim account. Sign in with your password and link it in account settings first.';
+	}
+	return 'Google sign-in was cancelled or could not be completed. Try again.';
+}
+
+export const load: PageServerLoad = async ({ locals, url }) => {
 	if (locals.user) {
 		redirect(303, '/');
 	}
-	return {};
+	return {
+		passkeyEnabled: isPasskeyEnabled(),
+		googleEnabled: isGoogleEnabled(),
+		oauthError: mapOAuthError(url.searchParams.get('error'))
+	};
 };
 
 export const actions: Actions = {
@@ -41,13 +53,10 @@ export const actions: Actions = {
 			return fail(400, { error: 'Invalid username or password.' });
 		}
 
-		const user = await verifyUserCredentials(username.value, check.value);
+		const user = await signInWithUsername(username.value, check.value, request, cookies);
 		if (!user) {
 			return fail(401, { error: 'Invalid username or password.' });
 		}
-
-		const session = await createAppSession(user.id);
-		setSessionCookie(cookies, session.token, session.expiresAt);
 
 		redirect(303, '/');
 	}

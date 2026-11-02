@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm';
 import {
 	index,
 	boolean,
@@ -14,13 +15,100 @@ import type { SharedProfileSnapshot } from '../sharing';
 export const users = pgTable('users', {
 	id: uuid('id').defaultRandom().primaryKey(),
 	username: text('username').notNull().unique(),
-	passwordHash: text('password_hash').notNull(),
+	displayUsername: text('display_username'),
+	name: text('name').notNull().default(''),
+	email: text('email')
+		.notNull()
+		.unique()
+		.default(sql`(gen_random_uuid()::text || '@users.geim.local')`),
+	emailVerified: boolean('email_verified').notNull().default(false),
+	image: text('image'),
+	passwordHash: text('password_hash').notNull().default(''),
 	displayCurrency: text('display_currency').notNull().default('IDR'),
 	purchaseRegion: text('purchase_region').notNull().default('ID'),
 	ownerPasswordReady: boolean('owner_password_ready').notNull().default(false),
 	createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 	updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
 });
+
+export const session = pgTable(
+	'session',
+	{
+		id: text('id').primaryKey(),
+		expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+		token: text('token').notNull().unique(),
+		createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+		updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+		ipAddress: text('ip_address'),
+		userAgent: text('user_agent'),
+		userId: uuid('user_id')
+			.notNull()
+			.references(() => users.id, { onDelete: 'cascade' })
+	},
+	(table) => [index('session_user_id_idx').on(table.userId)]
+);
+
+export const account = pgTable(
+	'account',
+	{
+		id: text('id').primaryKey(),
+		accountId: text('account_id').notNull(),
+		providerId: text('provider_id').notNull(),
+		userId: uuid('user_id')
+			.notNull()
+			.references(() => users.id, { onDelete: 'cascade' }),
+		accessToken: text('access_token'),
+		refreshToken: text('refresh_token'),
+		idToken: text('id_token'),
+		accessTokenExpiresAt: timestamp('access_token_expires_at', { withTimezone: true }),
+		refreshTokenExpiresAt: timestamp('refresh_token_expires_at', { withTimezone: true }),
+		scope: text('scope'),
+		password: text('password'),
+		createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+		updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+	},
+	(table) => [
+		index('account_user_id_idx').on(table.userId),
+		uniqueIndex('account_provider_account_idx').on(table.providerId, table.accountId),
+		uniqueIndex('account_user_provider_idx').on(table.userId, table.providerId)
+	]
+);
+
+export const verification = pgTable(
+	'verification',
+	{
+		id: text('id').primaryKey(),
+		identifier: text('identifier').notNull(),
+		value: text('value').notNull(),
+		expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+		createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+		updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+	},
+	(table) => [index('verification_identifier_idx').on(table.identifier)]
+);
+
+export const passkey = pgTable(
+	'passkey',
+	{
+		id: text('id').primaryKey(),
+		name: text('name'),
+		publicKey: text('public_key').notNull(),
+		userId: uuid('user_id')
+			.notNull()
+			.references(() => users.id, { onDelete: 'cascade' }),
+		credentialID: text('credential_id').notNull().unique(),
+		counter: integer('counter').notNull().default(0),
+		deviceType: text('device_type').notNull(),
+		backedUp: boolean('backed_up').notNull().default(false),
+		transports: text('transports'),
+		createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+		aaguid: text('aaguid')
+	},
+	(table) => [
+		index('passkey_user_id_idx').on(table.userId),
+		index('passkey_credential_id_idx').on(table.credentialID)
+	]
+);
 
 export const adminSettings = pgTable('admin_settings', {
 	key: text('key').primaryKey(),

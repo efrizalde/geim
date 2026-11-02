@@ -6,6 +6,16 @@ const optionalNonEmpty = (value: string | undefined): string | undefined => {
 };
 
 export const variables = defineEnvVars({
+	BETTER_AUTH_SECRET: {
+		description: 'Optional Better Auth secret; derived from ENCRYPTION_MASTER_KEY when omitted.',
+		schema: optionalNonEmpty
+	},
+	GOOGLE_CLIENT_ID: { description: 'Google OAuth client ID.', schema: optionalNonEmpty },
+	GOOGLE_CLIENT_SECRET: { description: 'Google OAuth client secret.', schema: optionalNonEmpty },
+	AUTH_ORIGIN: {
+		description: 'Canonical public application origin for sign-in.',
+		schema: optionalNonEmpty
+	},
 	OWNER_USER_ID: {
 		description: 'UUID of the configured instance owner; absent disables the admin panel.',
 		schema: optionalNonEmpty

@@ -80,6 +80,12 @@ The panel can pause new registrations without interrupting existing users. It lo
 
 Before deploying, apply the additive migrations and verify owner/non-owner access and cross-instance rate limiting in a separate environment. If rolling back to a version before the registration control while registration is paused, the old version ignores the setting; block registration at the edge first or explicitly reopen it. Migrations may remain in place during an application rollback.
 
+### Passkeys and Google sign-in
+
+Apply the database migrations, then set `AUTH_ORIGIN` to the exact public origin (for example `https://geim.efri.day`, without a trailing slash). Passkeys require HTTPS except on localhost. For local development, set it to the exact browser origin, such as `http://localhost:5173`. Passkeys are bound to the domain on which they were created.
+
+To enable Google sign-in, create a Google Cloud OAuth web client and add `{AUTH_ORIGIN}/api/auth/callback/google` as an authorized redirect URI. Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` on the server. Redeploy after updating production environment variables. Google sign-in and passkeys only work after the signed-in user links them from the Change password page; they do not automatically create or merge accounts. The password remains available as a recovery method.
+
 This project uses unofficial Riot endpoints that may change or be restricted. It is not affiliated with or endorsed by Riot Games. VALORANT and Riot Games are trademarks of Riot Games, Inc.
 
 ## License

@@ -1,12 +1,91 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
+	import { invalidateAll } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { ArrowLeft, Eye, EyeOff, KeyRound, ShieldCheck } from '@lucide/svelte';
+	import { authClient } from '#lib/auth-client.js';
 	import BrandLogo from '#lib/components/BrandLogo.svelte';
 	import type { PageProps } from './$types';
 	let { data, form }: PageProps = $props();
 	let submitting = $state(false);
 	let showPasswords = $state(false);
+	let passkeyBusy = $state(false);
+	let googleBusy = $state(false);
+	let passkeyMessage = $state('');
+	let passkeyError = $state('');
+
+	async function addPasskey() {
+		passkeyBusy = true;
+		passkeyMessage = '';
+		passkeyError = '';
+		try {
+			const result = await authClient.passkey.addPasskey({ name: data.username });
+			if (result.error) {
+				throw new Error(result.error.message || 'Could not save passkey. Try again.');
+			}
+			passkeyMessage = 'Passkey added. You can use it to sign in.';
+			await invalidateAll();
+		} catch (err) {
+			passkeyError = err instanceof Error ? err.message : 'Passkey setup failed.';
+		} finally {
+			passkeyBusy = false;
+		}
+	}
+
+	async function removePasskey(id: string) {
+		passkeyBusy = true;
+		passkeyMessage = '';
+		passkeyError = '';
+		try {
+			const result = await authClient.passkey.deletePasskey({ id });
+			if (result.error) {
+				throw new Error(result.error.message || 'Could not remove passkey.');
+			}
+			passkeyMessage = 'Passkey removed.';
+			await invalidateAll();
+		} catch (err) {
+			passkeyError = err instanceof Error ? err.message : 'Could not remove passkey.';
+		} finally {
+			passkeyBusy = false;
+		}
+	}
+
+	async function linkGoogle() {
+		googleBusy = true;
+		passkeyMessage = '';
+		passkeyError = '';
+		try {
+			const result = await authClient.linkSocial({
+				provider: 'google',
+				callbackURL: `${resolve('/account/password')}?google=linked`,
+				errorCallbackURL: resolve('/account/password')
+			});
+			if (result.error) {
+				throw new Error(result.error.message || 'Could not start Google account linking.');
+			}
+		} catch (err) {
+			passkeyError = err instanceof Error ? err.message : 'Could not link Google account.';
+			googleBusy = false;
+		}
+	}
+
+	async function unlinkGoogle(accountId: string) {
+		googleBusy = true;
+		passkeyMessage = '';
+		passkeyError = '';
+		try {
+			const result = await authClient.unlinkAccount({ accountId });
+			if (result.error) {
+				throw new Error(result.error.message || 'Could not unlink Google account.');
+			}
+			passkeyMessage = 'Google account unlinked.';
+			await invalidateAll();
+		} catch (err) {
+			passkeyError = err instanceof Error ? err.message : 'Could not unlink Google account.';
+		} finally {
+			googleBusy = false;
+		}
+	}
 </script>
 
 <svelte:head><title>Change password | geim</title></svelte:head>
@@ -134,5 +213,59 @@
 				>
 			</form>
 		{/if}
+		{#if data.passkeyEnabled || data.googleEnabled}<div class="mt-7 border-t border-white/10 pt-5">
+				<h2 class="font-display text-base font-bold text-white">Other ways to sign in</h2>
+				<p class="mt-1 text-xs leading-relaxed text-slate-400">
+					Link a passkey or Google account to this geim account. Your password still works.
+				</p>
+				{#if data.googleLinked}<p role="status" class="mt-3 text-xs text-emerald-300">
+						Google account linked.
+					</p>{/if}
+				{#if data.oauthError || passkeyError}<p role="alert" class="mt-3 text-xs text-rose-300">
+						{passkeyError || data.oauthError}
+					</p>{/if}
+				{#if data.passkeys?.length}
+					<ul class="mt-4 flex flex-col gap-2">
+						{#each data.passkeys as item (item.id)}
+							<li
+								class="neu-well flex items-center justify-between gap-3 rounded-xl px-3.5 py-2.5 text-xs text-slate-200"
+							>
+								<span class="truncate font-semibold">{item.label}</span>
+								<button
+									type="button"
+									onclick={() => removePasskey(item.id)}
+									disabled={passkeyBusy}
+									class="text-rose-300 underline hover:text-rose-200 disabled:opacity-50"
+									>Remove</button
+								>
+							</li>
+						{/each}
+					</ul>
+				{/if}
+				<div class="mt-4 flex flex-col gap-2">
+					{#if data.passkeyEnabled}<button
+							type="button"
+							onclick={addPasskey}
+							disabled={passkeyBusy || googleBusy}
+							class="neu-btn min-h-11 rounded-xl px-4 text-sm font-semibold disabled:opacity-50"
+							>{passkeyBusy ? 'Waiting for passkey…' : 'Add passkey'}</button
+						>{/if}{#if data.googleEnabled}{#if data.googleAccountId}<button
+								type="button"
+								onclick={() => unlinkGoogle(data.googleAccountId!)}
+								disabled={googleBusy || passkeyBusy}
+								class="neu-btn flex min-h-11 items-center justify-center rounded-xl px-4 text-sm font-semibold text-rose-200 disabled:opacity-50"
+								>{googleBusy ? 'Unlinking Google…' : 'Unlink Google account'}</button
+							>{:else}<button
+								type="button"
+								onclick={linkGoogle}
+								disabled={googleBusy || passkeyBusy}
+								class="neu-btn flex min-h-11 items-center justify-center rounded-xl px-4 text-sm font-semibold disabled:opacity-50"
+								>{googleBusy ? 'Redirecting to Google…' : 'Link Google account'}</button
+							>{/if}{/if}
+				</div>
+				{#if passkeyMessage}<p role="status" class="mt-3 text-xs text-slate-300">
+						{passkeyMessage}
+					</p>{/if}
+			</div>{/if}
 	</section>
 </main>

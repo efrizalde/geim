@@ -1,7 +1,7 @@
 import { fail, redirect } from '@sveltejs/kit';
 import { validatePassword, validateUsername } from '#lib/server/auth/password.js';
 import { checkLoginRateLimit, recordFailedLogin } from '#lib/server/auth/rate-limit.js';
-import { createAppSession, registerUser, setSessionCookie } from '#lib/server/auth/session.js';
+import { registerWithUsername } from '#lib/server/auth/session.js';
 import { registrationIsOpen } from '#lib/server/admin.js';
 import type { Actions, PageServerLoad } from './$types';
 
@@ -51,10 +51,8 @@ export const actions: Actions = {
 			return fail(400, { error: 'Passwords do not match.' });
 		}
 
-		const user = await registerUser(username.value, check.value);
+		const user = await registerWithUsername(username.value, check.value, request, cookies);
 		if (!user) return fail(409, { error: 'That username is already taken.' });
-		const session = await createAppSession(user.id);
-		setSessionCookie(cookies, session.token, session.expiresAt);
 
 		redirect(303, '/');
 	}

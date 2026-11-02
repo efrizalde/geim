@@ -1,34 +1,30 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { createHmac } from 'node:crypto';
 import { dev } from '$app/env';
-import type { Cookies } from '@sveltejs/kit';
-import { eq, lt } from 'drizzle-orm';
+import {
+	AUTH_ORIGIN,
+	BETTER_AUTH_SECRET,
+	ENCRYPTION_MASTER_KEY,
+	GOOGLE_CLIENT_ID,
+	GOOGLE_CLIENT_SECRET
+} from '$app/env/private';
+import { getRequestEvent } from '$app/server';
+import { drizzleAdapter } from '@better-auth/drizzle-adapter';
+import { passkey } from '@better-auth/passkey';
+import type { Cookies, RequestEvent } from '@sveltejs/kit';
+import { betterAuth } from 'better-auth/minimal';
+import { APIError, createAuthMiddleware, isAPIError } from 'better-auth/api';
+import { getSessionCookie, parseSetCookieHeader, toCookieOptions } from 'better-auth/cookies';
+import { username } from 'better-auth/plugins/username';
+import { sveltekitCookies } from 'better-auth/svelte-kit';
+import { and, eq } from 'drizzle-orm';
 import { getDb, schema } from '../db';
-import { hashPassword, verifyPassword } from './password';
+import { MIN_PASSWORD_LENGTH, hashPassword, verifyPassword } from './password';
+import { consumeLoginAttempt } from './shared-rate-limit';
 
-export const SESSION_COOKIE_NAME = 'geim_session';
-const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
-const SESSION_RENEW_THRESHOLD_MS = 15 * 24 * 60 * 60 * 1000; // 15 days
+export const LEGACY_SESSION_COOKIE_NAME = 'geim_session';
 
-function hashSessionToken(token: string): string {
-	return createHash('sha256').update(token, 'utf8').digest('hex');
-}
-
-export function generateSessionToken(): string {
-	return randomBytes(32).toString('base64url');
-}
-
-export function setSessionCookie(cookies: Cookies, token: string, expiresAt: Date): void {
-	cookies.set(SESSION_COOKIE_NAME, token, {
-		path: '/',
-		httpOnly: true,
-		sameSite: 'lax',
-		secure: !dev,
-		expires: expiresAt
-	});
-}
-
-export function clearSessionCookie(cookies: Cookies): void {
-	cookies.delete(SESSION_COOKIE_NAME, {
+export function clearLegacySessionCookie(cookies: Cookies): void {
+	cookies.delete(LEGACY_SESSION_COOKIE_NAME, {
 		path: '/',
 		httpOnly: true,
 		sameSite: 'lax',
@@ -36,127 +32,419 @@ export function clearSessionCookie(cookies: Cookies): void {
 	});
 }
 
-export async function registerUser(
-	username: string,
-	password: string
-): Promise<{ id: string } | null> {
-	const db = getDb();
-	const passwordHash = await hashPassword(password);
-	const inserted = await db
-		.insert(schema.users)
-		.values({
-			username,
-			passwordHash,
-			displayCurrency: 'IDR',
-			purchaseRegion: 'ID'
-		})
-		.onConflictDoNothing({ target: schema.users.username })
-		.returning({ id: schema.users.id });
-
-	return inserted[0] ?? null;
+export function resolveConfiguredOrigin(): URL | null {
+	if (!AUTH_ORIGIN) return null;
+	try {
+		const parsed = new URL(AUTH_ORIGIN);
+		if (
+			parsed.origin !== AUTH_ORIGIN ||
+			(parsed.protocol !== 'https:' &&
+				parsed.hostname !== 'localhost' &&
+				parsed.hostname !== '127.0.0.1')
+		) {
+			return null;
+		}
+		return parsed;
+	} catch {
+		return null;
+	}
 }
 
-export async function verifyUserCredentials(
-	username: string,
-	password: string
-): Promise<{ id: string; username: string } | null> {
-	const db = getDb();
-	const rows = await db
-		.select({
-			id: schema.users.id,
-			username: schema.users.username,
-			passwordHash: schema.users.passwordHash
-		})
-		.from(schema.users)
-		.where(eq(schema.users.username, username))
-		.limit(1);
-
-	const user = rows[0];
-	// Keep unknown usernames on the same scrypt path as incorrect passwords.
-	const valid = await verifyPassword(
-		password,
-		user?.passwordHash ?? `scryptv1$${'0'.repeat(32)}$${'0'.repeat(128)}`
-	);
-	if (!user || !valid) return null;
-
-	return { id: user.id, username: user.username };
+export function isPasskeyEnabled(): boolean {
+	return Boolean(resolveConfiguredOrigin() || dev);
 }
 
-export async function createAppSession(userId: string): Promise<{
-	token: string;
-	sessionId: string;
-	expiresAt: Date;
-}> {
+export function isGoogleEnabled(): boolean {
+	return Boolean((resolveConfiguredOrigin() || dev) && GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET);
+}
+
+function resolveAuthSecret(): string {
+	if (BETTER_AUTH_SECRET) return BETTER_AUTH_SECRET;
+	if (ENCRYPTION_MASTER_KEY) {
+		return createHmac('sha256', ENCRYPTION_MASTER_KEY)
+			.update('geim-better-auth-secret-v1')
+			.digest('hex');
+	}
+	if (dev) {
+		return 'geim-dev-only-better-auth-secret-key-0123456789abcdef';
+	}
+	throw new Error('BETTER_AUTH_SECRET or ENCRYPTION_MASTER_KEY is required for Better Auth.');
+}
+
+function resolveClientAddress(): string {
+	try {
+		return getRequestEvent().getClientAddress();
+	} catch {
+		return 'global';
+	}
+}
+
+export function applyResponseCookies(
+	cookies: Cookies | undefined,
+	headers: Headers | undefined
+): void {
+	if (!cookies || !headers) return;
+	const setCookie = headers.get('set-cookie');
+	if (!setCookie) return;
+	const parsed = parseSetCookieHeader(setCookie);
+	for (const [name, attributes] of parsed) {
+		try {
+			cookies.set(name, attributes.value, {
+				...toCookieOptions(attributes),
+				path: attributes.path || '/'
+			});
+		} catch {
+			// Ignore if response headers were already committed
+		}
+	}
+}
+
+function createAuthInstance() {
 	const db = getDb();
-	const token = generateSessionToken();
-	const sessionId = hashSessionToken(token);
-	const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
+	const configuredOrigin = resolveConfiguredOrigin();
+	const baseURL = configuredOrigin
+		? dev
+			? {
+					allowedHosts: [
+						configuredOrigin.host,
+						'localhost:*',
+						'127.0.0.1:*',
+						'localhost',
+						'127.0.0.1'
+					],
+					fallback: configuredOrigin.origin
+				}
+			: configuredOrigin.origin
+		: dev
+			? {
+					allowedHosts: ['localhost:*', '127.0.0.1:*', 'localhost', '127.0.0.1'],
+					protocol: 'http' as const,
+					fallback: 'http://localhost:5173'
+				}
+			: undefined;
 
-	// Opportunistic bounded cleanup: expired rows are only deleted otherwise on reuse.
-	await db.delete(schema.appSessions).where(lt(schema.appSessions.expiresAt, new Date()));
+	return betterAuth({
+		appName: 'geim',
+		secret: resolveAuthSecret(),
+		baseURL,
+		basePath: '/api/auth',
+		disabledPaths: ['/sign-in/email', '/sign-up/email'],
+		database: drizzleAdapter(db, {
+			provider: 'pg',
+			schema: {
+				...schema,
+				user: schema.users
+			}
+		}),
+		advanced: {
+			database: {
+				generateId: () => crypto.randomUUID()
+			}
+		},
+		session: {
+			expiresIn: 30 * 24 * 60 * 60,
+			updateAge: 15 * 24 * 60 * 60,
+			freshAge: 0
+		},
+		user: {
+			modelName: 'users',
+			additionalFields: {
+				passwordHash: {
+					type: 'string',
+					required: false,
+					defaultValue: '',
+					input: true,
+					returned: false,
+					fieldName: 'passwordHash'
+				},
+				displayCurrency: {
+					type: 'string',
+					required: false,
+					defaultValue: 'IDR',
+					input: false
+				},
+				purchaseRegion: {
+					type: 'string',
+					required: false,
+					defaultValue: 'ID',
+					input: false
+				},
+				ownerPasswordReady: {
+					type: 'boolean',
+					required: false,
+					defaultValue: false,
+					input: false,
+					returned: false
+				}
+			}
+		},
+		emailAndPassword: {
+			enabled: true,
+			minPasswordLength: MIN_PASSWORD_LENGTH,
+			maxPasswordLength: 128,
+			password: {
+				hash: hashPassword,
+				verify: ({ password, hash }) => verifyPassword(password, hash)
+			}
+		},
+		account: {
+			accountLinking: {
+				enabled: true,
+				allowDifferentEmails: true,
+				disableImplicitLinking: true,
+				updateUserInfoOnLink: false
+			}
+		},
+		socialProviders:
+			GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET
+				? {
+						google: {
+							clientId: GOOGLE_CLIENT_ID,
+							clientSecret: GOOGLE_CLIENT_SECRET,
+							disableSignUp: true,
+							disableImplicitSignUp: true
+						}
+					}
+				: undefined,
+		hooks: {
+			before: createAuthMiddleware(async (ctx) => {
+				if (ctx.path.startsWith('/passkey/')) {
+					if (!isPasskeyEnabled()) {
+						throw new APIError('SERVICE_UNAVAILABLE', {
+							message: 'Passkey sign-in is not configured.'
+						});
+					}
+					if (ctx.path === '/passkey/verify-authentication') {
+						let allowed: boolean;
+						try {
+							allowed = await consumeLoginAttempt('ip', resolveClientAddress());
+						} catch {
+							throw new APIError('SERVICE_UNAVAILABLE', {
+								message: 'Sign-in is temporarily unavailable. Try again later.'
+							});
+						}
+						if (!allowed) {
+							throw new APIError('TOO_MANY_REQUESTS', {
+								message: 'Too many sign-in attempts. Try again in a minute.'
+							});
+						}
+					}
+				}
 
-	await db.insert(schema.appSessions).values({
-		id: sessionId,
-		userId,
-		expiresAt
+				if (
+					ctx.path === '/sign-in/social' ||
+					ctx.path === '/link-social' ||
+					ctx.path.startsWith('/callback/')
+				) {
+					if (!isGoogleEnabled()) {
+						throw new APIError('SERVICE_UNAVAILABLE', {
+							message: 'Google sign-in is not configured.'
+						});
+					}
+				}
+
+				if (ctx.path === '/sign-in/username' && ctx.request) {
+					const rawUsername =
+						typeof ctx.body?.username === 'string' ? ctx.body.username.trim().toLowerCase() : '';
+					let allowed: boolean;
+					try {
+						const ipAllowed = await consumeLoginAttempt('ip', resolveClientAddress());
+						const userAllowed = rawUsername ? await consumeLoginAttempt('user', rawUsername) : true;
+						allowed = ipAllowed && userAllowed;
+					} catch {
+						throw new APIError('SERVICE_UNAVAILABLE', {
+							message: 'Sign-in is temporarily unavailable. Try again later.'
+						});
+					}
+					if (!allowed) {
+						throw new APIError('TOO_MANY_REQUESTS', {
+							message: 'Too many sign-in attempts. Try again in a minute.'
+						});
+					}
+				}
+			})
+		},
+		databaseHooks: {
+			account: {
+				create: {
+					before: async (acc) => {
+						if (acc.providerId === 'google') {
+							const existing = await db
+								.select({ id: schema.account.id, accountId: schema.account.accountId })
+								.from(schema.account)
+								.where(
+									and(
+										eq(schema.account.userId, acc.userId),
+										eq(schema.account.providerId, 'google')
+									)
+								)
+								.limit(1);
+							if (existing.length && existing[0].accountId !== acc.accountId) {
+								throw new APIError('CONFLICT', {
+									code: 'google_already_linked',
+									message: 'A Google account is already linked to this geim account.'
+								});
+							}
+						}
+					},
+					after: async (acc) => {
+						if (acc.providerId === 'credential' && acc.password) {
+							await db
+								.update(schema.users)
+								.set({ passwordHash: acc.password, updatedAt: new Date() })
+								.where(eq(schema.users.id, acc.userId));
+						}
+					}
+				},
+				update: {
+					after: async (acc) => {
+						if (acc?.providerId === 'credential' && acc.password) {
+							await db
+								.update(schema.users)
+								.set({ passwordHash: acc.password, updatedAt: new Date() })
+								.where(eq(schema.users.id, acc.userId));
+						}
+					}
+				}
+			}
+		},
+		plugins: [
+			username({
+				minUsernameLength: 3,
+				maxUsernameLength: 32,
+				usernameValidator: (value) => /^[a-zA-Z0-9_]{3,32}$/.test(value),
+				usernameNormalization: (value) => value.trim().toLowerCase()
+			}),
+			passkey({
+				rpName: 'geim',
+				rpID: configuredOrigin?.hostname,
+				origin: configuredOrigin?.origin
+			}),
+			sveltekitCookies(() => {
+				try {
+					return getRequestEvent();
+				} catch {
+					return undefined as never;
+				}
+			})
+		]
 	});
-
-	return { token, sessionId, expiresAt };
 }
 
-export async function validateAppSessionToken(token: string): Promise<{
+let cachedAuth: ReturnType<typeof createAuthInstance> | undefined;
+
+export function getAuth(): ReturnType<typeof createAuthInstance> {
+	if (cachedAuth) return cachedAuth;
+	cachedAuth = createAuthInstance();
+	return cachedAuth;
+}
+
+export async function registerWithUsername(
+	usernameValue: string,
+	password: string,
+	request: Request,
+	cookies: Cookies
+): Promise<{ id: string } | null> {
+	try {
+		const result = await getAuth().api.signUpEmail({
+			body: {
+				name: usernameValue,
+				email: `${crypto.randomUUID()}@users.geim.local`,
+				password,
+				username: usernameValue
+			},
+			headers: request.headers,
+			returnHeaders: true
+		});
+		applyResponseCookies(cookies, result.headers);
+		return { id: result.response.user.id };
+	} catch (err) {
+		if (
+			isAPIError(err) &&
+			(err.statusCode === 400 || err.statusCode === 409 || err.statusCode === 422)
+		) {
+			return null;
+		}
+		throw err;
+	}
+}
+
+export async function signInWithUsername(
+	usernameValue: string,
+	password: string,
+	request: Request,
+	cookies: Cookies
+): Promise<{ id: string; username: string } | null> {
+	try {
+		const result = await getAuth().api.signInUsername({
+			body: {
+				username: usernameValue,
+				password
+			},
+			headers: request.headers,
+			returnHeaders: true
+		});
+		applyResponseCookies(cookies, result.headers);
+		return {
+			id: result.response.user.id,
+			username: result.response.user.username ?? usernameValue
+		};
+	} catch (err) {
+		if (isAPIError(err) && (err.statusCode === 401 || err.statusCode === 422)) {
+			return null;
+		}
+		throw err;
+	}
+}
+
+export async function resolveRequestSession(event: RequestEvent): Promise<{
 	session: { id: string; expiresAt: Date };
 	user: NonNullable<App.Locals['user']>;
 } | null> {
-	const db = getDb();
-	const sessionId = hashSessionToken(token);
-
-	const rows = await db
-		.select({
-			sessionId: schema.appSessions.id,
-			expiresAt: schema.appSessions.expiresAt,
-			userId: schema.users.id,
-			username: schema.users.username,
-			displayCurrency: schema.users.displayCurrency,
-			purchaseRegion: schema.users.purchaseRegion
-		})
-		.from(schema.appSessions)
-		.innerJoin(schema.users, eq(schema.appSessions.userId, schema.users.id))
-		.where(eq(schema.appSessions.id, sessionId))
-		.limit(1);
-
-	const row = rows[0];
-	if (!row) return null;
-
-	const now = Date.now();
-	if (row.expiresAt.getTime() <= now) {
-		await db.delete(schema.appSessions).where(eq(schema.appSessions.id, sessionId));
+	if (event.cookies.get(LEGACY_SESSION_COOKIE_NAME)) {
+		clearLegacySessionCookie(event.cookies);
+	}
+	if (!getSessionCookie(event.request)) {
 		return null;
 	}
-
-	let expiresAt = row.expiresAt;
-	if (expiresAt.getTime() - now < SESSION_RENEW_THRESHOLD_MS) {
-		expiresAt = new Date(now + SESSION_TTL_MS);
-		await db
-			.update(schema.appSessions)
-			.set({ expiresAt })
-			.where(eq(schema.appSessions.id, sessionId));
+	const result = await getAuth().api.getSession({
+		headers: event.request.headers,
+		returnHeaders: true
+	});
+	applyResponseCookies(event.cookies, result.headers);
+	const data = result.response;
+	if (!data?.session || !data.user) {
+		return null;
 	}
-
-	const displayCurrency = row.displayCurrency === 'USD' ? 'USD' : 'IDR';
-
+	const userRecord = data.user as typeof data.user & {
+		username?: string | null;
+		displayCurrency?: string | null;
+		purchaseRegion?: string | null;
+	};
 	return {
-		session: { id: row.sessionId, expiresAt },
+		session: {
+			id: data.session.id,
+			expiresAt: new Date(data.session.expiresAt)
+		},
 		user: {
-			id: row.userId,
-			username: row.username,
-			displayCurrency,
-			purchaseRegion: row.purchaseRegion
+			id: data.user.id,
+			username: userRecord.username || data.user.name,
+			displayCurrency: userRecord.displayCurrency === 'USD' ? 'USD' : 'IDR',
+			purchaseRegion: userRecord.purchaseRegion || 'ID'
 		}
 	};
 }
 
-export async function invalidateAppSession(sessionId: string): Promise<void> {
-	const db = getDb();
-	await db.delete(schema.appSessions).where(eq(schema.appSessions.id, sessionId));
+export async function signOutRequestSession(request: Request, cookies: Cookies): Promise<void> {
+	clearLegacySessionCookie(cookies);
+	if (!getSessionCookie(request)) return;
+	try {
+		const result = await getAuth().api.signOut({
+			headers: request.headers,
+			returnHeaders: true
+		});
+		applyResponseCookies(cookies, result.headers);
+	} catch {
+		// Session already expired or missing
+	}
 }

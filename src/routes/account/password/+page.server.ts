@@ -1,13 +1,62 @@
+import { getAuthenticatorName } from '@better-auth/passkey';
 import { fail, redirect } from '@sveltejs/kit';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { hashPassword, validatePassword, verifyPassword } from '#lib/server/auth/password.js';
+import { isGoogleEnabled, isPasskeyEnabled } from '#lib/server/auth/session.js';
 import { consumeLoginAttempt } from '#lib/server/auth/shared-rate-limit.js';
 import { getDb, schema } from '#lib/server/db/index.js';
 import type { Actions, PageServerLoad } from './$types';
 
-export const load: PageServerLoad = ({ locals }) => {
+export const load: PageServerLoad = async ({ locals, url }) => {
 	if (!locals.user) redirect(303, '/login');
-	return { username: locals.user.username };
+	let passkeys: { id: string; label: string; createdAt: string | null }[] = [];
+	let googleAccountId: string | null = null;
+	try {
+		const db = getDb();
+		const [storedPasskeys, storedGoogle] = await Promise.all([
+			db
+				.select({
+					id: schema.passkey.id,
+					name: schema.passkey.name,
+					aaguid: schema.passkey.aaguid,
+					createdAt: schema.passkey.createdAt
+				})
+				.from(schema.passkey)
+				.where(eq(schema.passkey.userId, locals.user.id)),
+			db
+				.select({ id: schema.account.id })
+				.from(schema.account)
+				.where(
+					and(eq(schema.account.userId, locals.user.id), eq(schema.account.providerId, 'google'))
+				)
+				.limit(1)
+		]);
+		passkeys = storedPasskeys.map((item) => ({
+			id: item.id,
+			label: item.name || getAuthenticatorName(item.aaguid) || 'Passkey',
+			createdAt: item.createdAt ? item.createdAt.toISOString() : null
+		}));
+		googleAccountId = storedGoogle[0]?.id ?? null;
+	} catch {
+		// Keep password form usable if auxiliary lookup fails
+	}
+	const errorCode = url.searchParams.get('error');
+	const oauthError =
+		errorCode === 'account_already_linked_to_different_user' ||
+		errorCode === 'google_already_linked'
+			? 'This Google account or geim account is already linked.'
+			: errorCode
+				? 'Could not link Google account. Try again.'
+				: null;
+	return {
+		username: locals.user.username,
+		googleLinked: url.searchParams.get('google') === 'linked' || Boolean(googleAccountId),
+		googleAccountId,
+		passkeys,
+		oauthError,
+		passkeyEnabled: isPasskeyEnabled(),
+		googleEnabled: isGoogleEnabled()
+	};
 };
 
 export const actions: Actions = {
@@ -39,10 +88,16 @@ export const actions: Actions = {
 				WITH changed AS (
 					UPDATE users SET password_hash = ${nextHash}, updated_at = now()
 					WHERE id = ${locals.user.id}::uuid AND password_hash = ${user.passwordHash}
-					AND EXISTS (SELECT 1 FROM app_sessions WHERE id = ${locals.sessionId} AND user_id = ${locals.user.id}::uuid AND expires_at > now())
+					AND EXISTS (SELECT 1 FROM session WHERE id = ${locals.sessionId} AND user_id = ${locals.user.id}::uuid AND expires_at > now())
 					RETURNING id
+				), updated_account AS (
+					INSERT INTO account (id, account_id, provider_id, user_id, password, created_at, updated_at)
+					SELECT gen_random_uuid()::text, id::text, 'credential', id, ${nextHash}, now(), now() FROM changed
+					ON CONFLICT (provider_id, account_id) DO UPDATE SET password = ${nextHash}, updated_at = now()
+				), revoked_legacy AS (
+					DELETE FROM app_sessions WHERE user_id IN (SELECT id FROM changed)
 				), revoked AS (
-					DELETE FROM app_sessions WHERE user_id IN (SELECT id FROM changed) AND id <> ${locals.sessionId} RETURNING id
+					DELETE FROM session WHERE user_id IN (SELECT id FROM changed) AND id <> ${locals.sessionId} RETURNING id
 				)
 				SELECT id, (SELECT count(*) FROM revoked) AS revoked FROM changed
 			`);

@@ -7,23 +7,22 @@ import { clearFailedLogins } from './auth/rate-limit';
 import { registrationIsOpen } from './admin';
 import { consumeLoginAttempt } from './auth/shared-rate-limit';
 import {
-	createAppSession,
-	registerUser,
-	setSessionCookie,
-	validateAppSessionToken,
-	verifyUserCredentials
+	getAuth,
+	registerWithUsername,
+	resolveRequestSession,
+	signInWithUsername
 } from './auth/session';
 import { publishSharedProfile } from './sharing';
 
+vi.mock('$app/env', () => ({ building: false, dev: true }));
 vi.mock('./auth/session', () => ({
-	SESSION_COOKIE_NAME: 'geim_session',
-	clearSessionCookie: vi.fn(),
-	createAppSession: vi.fn(),
-	invalidateAppSession: vi.fn(),
-	registerUser: vi.fn(),
-	setSessionCookie: vi.fn(),
-	validateAppSessionToken: vi.fn(),
-	verifyUserCredentials: vi.fn()
+	getAuth: vi.fn(),
+	isGoogleEnabled: vi.fn().mockReturnValue(false),
+	isPasskeyEnabled: vi.fn().mockReturnValue(true),
+	registerWithUsername: vi.fn(),
+	resolveRequestSession: vi.fn(),
+	signInWithUsername: vi.fn(),
+	signOutRequestSession: vi.fn()
 }));
 vi.mock('./sharing', () => ({
 	getProfileShare: vi.fn(),
@@ -73,7 +72,7 @@ describe('account form actions', () => {
 		expect(await registerActions.default(actionEvent({}, false) as never)).toMatchObject({
 			status: 503
 		});
-		expect(registerUser).not.toHaveBeenCalled();
+		expect(registerWithUsername).not.toHaveBeenCalled();
 	});
 
 	it('fails login closed when the shared limiter rejects or is unavailable', async () => {
@@ -89,12 +88,10 @@ describe('account form actions', () => {
 				actionEvent({ username: 'player_b', password: '1234' }, false) as never
 			)
 		).toMatchObject({ status: 503 });
-		expect(verifyUserCredentials).not.toHaveBeenCalled();
+		expect(signInWithUsername).not.toHaveBeenCalled();
 	});
 	it('registers normalized usernames and signs in the newly created user', async () => {
-		vi.mocked(registerUser).mockResolvedValue({ id: 'new-user' });
-		const session = { token: 'new-token', sessionId: 'hashed-token', expiresAt: new Date() };
-		vi.mocked(createAppSession).mockResolvedValue(session);
+		vi.mocked(registerWithUsername).mockResolvedValue({ id: 'new-user' });
 		const event = actionEvent(
 			{ username: ' Player_B ', password: '1234', confirmPassword: '1234' },
 			false
@@ -103,9 +100,12 @@ describe('account form actions', () => {
 			status: 303,
 			location: '/'
 		});
-		expect(registerUser).toHaveBeenCalledWith('player_b', '1234');
-		expect(createAppSession).toHaveBeenCalledWith('new-user');
-		expect(setSessionCookie).toHaveBeenCalledWith(event.cookies, session.token, session.expiresAt);
+		expect(registerWithUsername).toHaveBeenCalledWith(
+			'player_b',
+			'1234',
+			event.request,
+			event.cookies
+		);
 	});
 
 	it('rejects mismatched passwords, duplicates, and excessive registration attempts', async () => {
@@ -120,8 +120,8 @@ describe('account form actions', () => {
 			) as never
 		);
 		expect(mismatch).toMatchObject({ status: 400 });
-		expect(registerUser).not.toHaveBeenCalled();
-		vi.mocked(registerUser).mockResolvedValue(null);
+		expect(registerWithUsername).not.toHaveBeenCalled();
+		vi.mocked(registerWithUsername).mockResolvedValue(null);
 		const fields = { username: 'player_b', password: '1234', confirmPassword: '1234' };
 		for (let i = 0; i < 4; i++) {
 			expect(await registerActions.default(actionEvent(fields, false) as never)).toMatchObject({
@@ -131,28 +131,33 @@ describe('account form actions', () => {
 		expect(await registerActions.default(actionEvent(fields, false) as never)).toMatchObject({
 			status: 429
 		});
-		expect(createAppSession).not.toHaveBeenCalled();
 	});
 
 	it('logs in with the supplied username and preserves a generic invalid-credentials error', async () => {
-		vi.mocked(verifyUserCredentials).mockResolvedValue(null);
+		vi.mocked(signInWithUsername).mockResolvedValue(null);
 		expect(
 			await loginActions.default(
 				actionEvent({ username: 'PLAYER_B', password: '1234' }, false) as never
 			)
 		).toMatchObject({ status: 401, data: { error: 'Invalid username or password.' } });
-		expect(verifyUserCredentials).toHaveBeenCalledWith('player_b', '1234');
-		expect(createAppSession).not.toHaveBeenCalled();
-		vi.mocked(verifyUserCredentials).mockResolvedValue({ id: 'user-b', username: 'player_b' });
-		vi.mocked(createAppSession).mockResolvedValue({
-			token: 'token',
-			sessionId: 'hash',
-			expiresAt: new Date()
+		expect(signInWithUsername).toHaveBeenCalledWith(
+			'player_b',
+			'1234',
+			expect.any(Request),
+			expect.any(Object)
+		);
+		vi.mocked(signInWithUsername).mockResolvedValue({ id: 'user-b', username: 'player_b' });
+		const event = actionEvent({ username: 'PLAYER_B', password: '1234' }, false);
+		await expect(loginActions.default(event as never)).rejects.toMatchObject({
+			status: 303,
+			location: '/'
 		});
-		await expect(
-			loginActions.default(actionEvent({ username: 'PLAYER_B', password: '1234' }, false) as never)
-		).rejects.toMatchObject({ status: 303, location: '/' });
-		expect(createAppSession).toHaveBeenCalledWith('user-b');
+		expect(signInWithUsername).toHaveBeenCalledWith(
+			'player_b',
+			'1234',
+			event.request,
+			event.cookies
+		);
 	});
 });
 
@@ -213,14 +218,27 @@ describe('public and private route boundaries', () => {
 			expect((await handle(input as never)).status).toBe(200);
 			expect(input.resolve).toHaveBeenCalled();
 		}
-		expect(validateAppSessionToken).not.toHaveBeenCalled();
+		expect(resolveRequestSession).toHaveBeenCalledTimes(2);
 	});
 
 	it('serves shares and fixed-host media without touching app sessions, even with stale cookies', async () => {
 		for (const path of ['/share/' + 'a'.repeat(32), '/api/valorant-media?url=test']) {
 			expect((await handle(hookInput(path, 'GET', 'stale-cookie') as never)).status).toBe(200);
 		}
-		expect(validateAppSessionToken).not.toHaveBeenCalled();
+		expect(resolveRequestSession).not.toHaveBeenCalled();
+	});
+
+	it('routes /api/auth/* requests through the Better Auth SvelteKit handler', async () => {
+		const handler = vi.fn().mockResolvedValue(new Response('{"ok":true}', { status: 200 }));
+		vi.mocked(getAuth).mockReturnValue({
+			handler,
+			options: { basePath: '/api/auth' }
+		} as never);
+		const input = hookInput('/api/auth/passkey/generate-authenticate-options', 'GET');
+		const response = await handle(input as never);
+		expect(response.status).toBe(200);
+		expect(handler).toHaveBeenCalledWith(input.event.request);
+		expect(resolveRequestSession).not.toHaveBeenCalled();
 	});
 
 	it('keeps the dashboard, mutation routes, and other APIs private', async () => {
