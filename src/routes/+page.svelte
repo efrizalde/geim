@@ -329,6 +329,12 @@
 								</p>
 							</div>
 							<div class="my-1 border-t border-white/8"></div>
+							<a
+								href={resolve('/account/password')}
+								role="menuitem"
+								class="flex items-center gap-2 rounded-xl px-3 py-2.5 text-xs font-semibold text-slate-200 hover:bg-white/10"
+								><KeyRound class="h-3.5 w-3.5 text-neu-cyan" /> Change password</a
+							>
 							{#if data.isOwner}
 								<a
 									href={resolve('/admin')}
