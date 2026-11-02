@@ -5,7 +5,11 @@ import { hashPassword, verifyPassword } from './auth/password';
 
 const mocks = vi.hoisted(() => ({ execute: vi.fn(), select: vi.fn() }));
 vi.mock('./auth/shared-rate-limit', () => ({ consumeLoginAttempt: vi.fn() }));
-vi.mock('./auth/password', () => ({ hashPassword: vi.fn(), verifyPassword: vi.fn() }));
+vi.mock('./auth/password', async (importOriginal) => ({
+	...(await importOriginal<typeof import('./auth/password')>()),
+	hashPassword: vi.fn(),
+	verifyPassword: vi.fn()
+}));
 vi.mock('./db/index', () => ({
 	getDb: () => ({ select: mocks.select, execute: mocks.execute }),
 	schema: { users: { id: {}, passwordHash: {} } }
@@ -39,15 +43,21 @@ beforeEach(() => {
 	mocks.execute.mockResolvedValue({ rows: [{ id: 'user-id' }] });
 });
 describe('password change', () => {
-	it('requires authentication and matching strong passwords before touching the database', async () => {
+	it('requires authentication and matching passwords before touching the database', async () => {
 		expect(await actions.default(event(valid, false))).toMatchObject({ status: 401 });
 		expect(
-			await actions.default(event({ ...valid, newPassword: 'short', confirmPassword: 'short' }))
+			await actions.default(event({ ...valid, newPassword: '123', confirmPassword: '123' }))
 		).toMatchObject({ status: 400 });
 		expect(await actions.default(event({ ...valid, confirmPassword: 'different' }))).toMatchObject({
 			status: 400
 		});
 		expect(mocks.execute).not.toHaveBeenCalled();
+	});
+	it('accepts a four-digit PIN', async () => {
+		expect(
+			await actions.default(event({ ...valid, newPassword: '2202', confirmPassword: '2202' }))
+		).toEqual({ success: true });
+		expect(hashPassword).toHaveBeenCalledWith('2202');
 	});
 	it('rejects incorrect passwords and rate-limited attempts', async () => {
 		vi.mocked(verifyPassword).mockResolvedValueOnce(false);

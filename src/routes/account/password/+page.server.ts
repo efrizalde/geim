@@ -1,6 +1,6 @@
 import { fail, redirect } from '@sveltejs/kit';
 import { eq, sql } from 'drizzle-orm';
-import { hashPassword, verifyPassword } from '#lib/server/auth/password.js';
+import { hashPassword, validatePassword, verifyPassword } from '#lib/server/auth/password.js';
 import { consumeLoginAttempt } from '#lib/server/auth/shared-rate-limit.js';
 import { getDb, schema } from '#lib/server/db/index.js';
 import type { Actions, PageServerLoad } from './$types';
@@ -19,8 +19,8 @@ export const actions: Actions = {
 		const confirmation = fields.get('confirmPassword');
 		if (typeof current !== 'string' || !current || current.length > 128)
 			return fail(400, { error: 'Enter your current password.' });
-		if (typeof next !== 'string' || next.length < 16 || next.length > 128)
-			return fail(400, { error: 'New password must be 16–128 characters.' });
+		const nextCheck = validatePassword(next);
+		if (!nextCheck.ok) return fail(400, { error: nextCheck.error });
 		if (next !== confirmation) return fail(400, { error: 'New passwords do not match.' });
 		if (next === current) return fail(400, { error: 'Choose a different password.' });
 		try {
@@ -34,7 +34,7 @@ export const actions: Actions = {
 				.limit(1);
 			if (!user || !(await verifyPassword(current, user.passwordHash)))
 				return fail(400, { error: 'Current password is incorrect.' });
-			const nextHash = await hashPassword(next);
+			const nextHash = await hashPassword(nextCheck.value);
 			const result = await db.execute(sql`
 				WITH changed AS (
 					UPDATE users SET password_hash = ${nextHash}, updated_at = now()

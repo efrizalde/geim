@@ -95,12 +95,12 @@
 						type={showPasswords ? 'text' : 'password'}
 						autocomplete="new-password"
 						required
-						minlength="16"
+						minlength="4"
 						maxlength="128"
 						aria-describedby="password-help"
 						class="neu-well min-h-11 rounded-xl px-3 text-sm text-white"
 					/><span id="password-help" class="font-normal text-slate-400"
-						>Use at least 16 characters.</span
+						>Use at least 4 characters. A PIN like 2202 works.</span
 					></label
 				>
 				<label class="flex flex-col gap-2 text-xs font-semibold text-slate-200"
@@ -109,7 +109,7 @@
 						type={showPasswords ? 'text' : 'password'}
 						autocomplete="new-password"
 						required
-						minlength="16"
+						minlength="4"
 						maxlength="128"
 						class="neu-well min-h-11 rounded-xl px-3 text-sm text-white"
 					/></label
